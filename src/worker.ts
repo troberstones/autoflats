@@ -25,8 +25,8 @@ onmessage = (e: MessageEvent) => {
       core = hit.core.slice()
       labels = hit.labels.slice()
     } else {
-      ;({ core } = trappedBall(line, m.W, m.H, m.maxGap))
-      labels = expandLabels(core, m.W, m.H)
+      ;({ core } = trappedBall(line, m.W, m.H, m.maxGap, ink))
+      labels = expandLabels(core, m.W, m.H, ink)
       segCache.set(m.segKey, { core: core.slice(), labels: labels.slice() })
       for (const k of segCache.keys()) { if (segCache.size <= 2) break; segCache.delete(k) }
     }
@@ -47,7 +47,7 @@ onmessage = (e: MessageEvent) => {
     postMessage({ t: 'flat', core: core.buffer, labels: labels.buffer, regions, segs: res.segs, token: m.token },
       { transfer: [core.buffer, labels.buffer] })
   } else if (m.t === 'carve') {
-    const res = carve(new Int32Array(m.core), new Uint8Array(m.line), m.W, m.H, m.idx, m.r)
+    const res = carve(new Int32Array(m.core), new Uint8Array(m.line), m.W, m.H, m.idx, m.r, m.ink ? new Uint8Array(m.ink) : null)
     if (!res) { postMessage({ t: 'carve', ok: false, token: m.token }); return }
     postMessage({ t: 'carve', ok: true, core: res.core.buffer, labels: res.labels.buffer, newId: res.newId, newArea: res.newArea, target: res.target, token: m.token },
       { transfer: [res.core.buffer, res.labels.buffer] })
@@ -132,7 +132,7 @@ function applyMerges(core: Int32Array, labels: Int32Array, merges: Array<[number
 }
 
 // Carve a new trapped-ball region out of an existing one at click index.
-function carve(core: Int32Array, line: Uint8Array, W: number, H: number, idx: number, r: number) {
+function carve(core: Int32Array, line: Uint8Array, W: number, H: number, idx: number, r: number, ink: Uint8Array | null) {
   const N = W * H
   const target = core[idx]
   if (!target) return null
@@ -187,6 +187,6 @@ function carve(core: Int32Array, line: Uint8Array, W: number, H: number, idx: nu
     }
     levelEnd = qt
   }
-  const labels = expandLabels(core, W, H)
+  const labels = expandLabels(core, W, H, ink)
   return { core, labels, newId, newArea, target }
 }

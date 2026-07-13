@@ -8,9 +8,13 @@
 // - seeds: pixel indices allowed to grow. Labeled pixels NOT in seeds are
 //   fixed obstacles-with-identity: never overwritten, never growing.
 //   If omitted, every labeled pixel seeds.
+// - cost: per-pixel extra weight (e.g. the ink map) — soft watershed: fronts
+//   pay to cross dark pixels, so region boundaries snap to faint stroke
+//   remnants instead of the geometric midpoint.
 export function growLabels(labels: Int32Array, W: number, H: number,
-  opts: { blocked?: Uint8Array | null; maxCost?: number; seeds?: Int32Array | null } = {}) {
+  opts: { blocked?: Uint8Array | null; maxCost?: number; seeds?: Int32Array | null; cost?: Uint8Array | null } = {}) {
   const blocked = opts.blocked ?? null
+  const cost = opts.cost ?? null
   const maxCost = opts.maxCost ?? 0x7ffffffe
   const N = W * H
   const INF = 0x7fffffff
@@ -45,7 +49,8 @@ export function growLabels(labels: Int32Array, W: number, H: number,
           if (labels[q] && dist[q] === INF) continue
           // don't slip diagonally between two blocked pixels
           if (dx && dy && blocked && blocked[y * W + qx] && blocked[qy * W + x]) continue
-          const nd = c + (dx && dy ? 4 : 3)
+          // ink 255 adds ~23 units (≈8 px) — crossing a faint stroke is expensive
+          const nd = c + (dx && dy ? 4 : 3) + (cost ? (cost[q] * 3) >> 5 : 0)
           if (nd > maxCost || nd >= dist[q]) continue
           dist[q] = nd
           labels[q] = id
@@ -57,10 +62,11 @@ export function growLabels(labels: Int32Array, W: number, H: number,
   }
 }
 
-// Expand core labels into line pixels; adjacent regions meet at the stroke's
-// medial axis, so fills reach the middle of every line (no fringe).
-export function expandLabels(core: Int32Array, W: number, H: number): Int32Array {
+// Expand core labels into line pixels; adjacent regions race and meet at the
+// stroke's darkest ridge (given ink) or its medial axis, so fills reach the
+// middle of every line (no fringe).
+export function expandLabels(core: Int32Array, W: number, H: number, ink?: Uint8Array | null): Int32Array {
   const labels = core.slice()
-  growLabels(labels, W, H, {})
+  growLabels(labels, W, H, { cost: ink ?? null })
   return labels
 }

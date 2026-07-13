@@ -8,7 +8,7 @@ import { growLabels } from './expand.ts'
 // Leftover free pixels (bands hugging strokes, wedges) are then assigned to
 // their nearest connected region — never fragmented into slivers — and only
 // truly enclosed pockets become new regions.
-export function trappedBall(line: Uint8Array, W: number, H: number, maxGap: number) {
+export function trappedBall(line: Uint8Array, W: number, H: number, maxGap: number, ink?: Uint8Array | null) {
   const N = W * H
   const dist = distanceTransform(line, W, H)
   const core = new Int32Array(N)
@@ -63,8 +63,9 @@ export function trappedBall(line: Uint8Array, W: number, H: number, maxGap: numb
     if (total) growLabels(core, W, H, { blocked: line, maxCost: thr, seeds: queue.subarray(0, total) })
   }
 
-  // attach every remaining free pixel to its nearest connected region
-  growLabels(core, W, H, { blocked: line })
+  // attach every remaining free pixel to its nearest connected region;
+  // ink-weighted so faint sub-threshold strokes still act as soft walls
+  growLabels(core, W, H, { blocked: line, cost: ink ?? null })
 
   // enclosed pockets unreachable from any region become their own regions
   for (let s = 0; s < N; s++) {

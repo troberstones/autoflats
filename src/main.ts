@@ -295,7 +295,8 @@ function carveAt(idx: number) {
     afterModelChange()
     status('Filled')
   }
-  worker.postMessage({ t: 'carve', core: coreCopy.buffer, line: line.buffer, W: doc.W, H: doc.H, idx, r: params().gap, token: tk }, [coreCopy.buffer, line.buffer])
+  const inkCopy = doc.ink!.slice()
+  worker.postMessage({ t: 'carve', core: coreCopy.buffer, line: line.buffer, ink: inkCopy.buffer, W: doc.W, H: doc.H, idx, r: params().gap, token: tk }, [coreCopy.buffer, line.buffer, inkCopy.buffer])
 }
 
 view.onStroke = pts => {
