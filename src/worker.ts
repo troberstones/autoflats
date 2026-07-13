@@ -7,18 +7,32 @@ import { flowField } from './core/flow.ts'
 import { analyzeFronts } from './core/fronts.ts'
 import { mergeSlivers } from './core/slivers.ts'
 
+// Stage caches: raw segmentation is the expensive stage; postprocess-only
+// parameter changes (min region, sliver, auto-merge) reuse it. The flow field
+// only depends on the ink. Keys are opaque strings built by the main thread.
+let segCache: { key: string; core: Int32Array; labels: Int32Array } | null = null
+let flowCache: { key: string; flow: ReturnType<typeof flowField> } | null = null
+
 onmessage = (e: MessageEvent) => {
   const m = e.data
   if (m.t === 'flat') {
     const line = new Uint8Array(m.line)
     const ink = new Uint8Array(m.ink)
-    const { core } = trappedBall(line, m.W, m.H, m.maxGap)
-    let labels = expandLabels(core, m.W, m.H)
+    let core: Int32Array, labels: Int32Array
+    if (segCache && segCache.key === m.segKey) {
+      core = segCache.core.slice()
+      labels = segCache.labels.slice()
+    } else {
+      ;({ core } = trappedBall(line, m.W, m.H, m.maxGap))
+      labels = expandLabels(core, m.W, m.H)
+      segCache = { key: m.segKey, core: core.slice(), labels: labels.slice() }
+    }
     let { regions } = finalizeRegions(core, labels, m.W, m.H, m.minArea)
     if (mergeSlivers(core, labels, line, m.W, m.H, m.sliverW ?? 0)) {
       ;({ regions } = finalizeRegions(core, labels, m.W, m.H, m.minArea))
     }
-    const flow = flowField(ink, m.W, m.H)
+    if (!flowCache || flowCache.key !== m.flowKey) flowCache = { key: m.flowKey, flow: flowField(ink, m.W, m.H) }
+    const flow = flowCache.flow
     const maxBridge = Math.max(6, m.maxGap * 2 + 4)
     let res = analyzeFronts(labels, line, m.W, m.H, flow, maxBridge, bgLut(regions), m.autoMerge)
     if (res.merges.length) {

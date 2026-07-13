@@ -8,8 +8,19 @@ const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getEleme
 
 const doc = new Doc()
 const view = new CanvasView($<HTMLCanvasElement>('view'))
-const worker = new Worker(new URL('./worker.ts', import.meta.url), { type: 'module' })
+let worker = new Worker(new URL('./worker.ts', import.meta.url), { type: 'module' })
 const undoStack: UndoOp[] = []
+let strokesVersion = 0
+
+// Abort any in-flight worker job instantly by replacing the worker.
+// (Also drops the worker-side stage caches — callers only cancel when
+// parameters changed, so those caches were stale anyway.)
+function cancelWork() {
+  if (!busy) return
+  worker.terminate()
+  worker = new Worker(new URL('./worker.ts', import.meta.url), { type: 'module' })
+  setBusy(false)
+}
 let busy = false
 let token = 0
 let mergeFirst = 0
@@ -114,6 +125,7 @@ function rasterizeBarriers() {
   const mask = new Uint8Array(doc.W * doc.H)
   for (let i = 0; i < mask.length; i++) if (a[i * 4 + 3] > 64) mask[i] = 1
   doc.barrierMask = mask
+  strokesVersion++
   view.render()
 }
 
@@ -148,7 +160,8 @@ const fmtArea = (a: number) => a > 1e6 ? (a / 1e6).toFixed(1) + 'M' : a > 1000 ?
 
 // ---------- flatting ----------
 function runFlat(matchOld: boolean) {
-  if (!doc.ink || busy) return
+  if (!doc.ink) return
+  cancelWork() // a newer request supersedes any running one
   setBusy(true)
   status('Flatting…', true)
   const line = currentLineMask()
@@ -179,7 +192,14 @@ function runFlat(matchOld: boolean) {
     }
   }
   const ink = doc.ink!.slice()
-  worker.postMessage({ t: 'flat', line: line.buffer, ink: ink.buffer, W: doc.W, H: doc.H, maxGap: params().gap, minArea: params().min, sliverW: params().sliver, autoMerge: ($<HTMLInputElement>('cMerge')).checked, token: tk }, [line.buffer, ink.buffer])
+  const p = params()
+  worker.postMessage({
+    t: 'flat', line: line.buffer, ink: ink.buffer, W: doc.W, H: doc.H,
+    maxGap: p.gap, minArea: p.min, sliverW: p.sliver, autoMerge: ($<HTMLInputElement>('cMerge')).checked,
+    segKey: `${doc.W}|${p.thr}|${p.smooth}|${p.gap}|${p.sat}|${strokesVersion}`,
+    flowKey: `${doc.W}|${p.sat}`,
+    token: tk,
+  }, [line.buffer, ink.buffer])
 }
 
 // carry colors/names/visibility from old regions to best-overlapping new ones
