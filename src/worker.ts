@@ -10,7 +10,8 @@ import { mergeSlivers } from './core/slivers.ts'
 // Stage caches: raw segmentation is the expensive stage; postprocess-only
 // parameter changes (min region, sliver, auto-merge) reuse it. The flow field
 // only depends on the ink. Keys are opaque strings built by the main thread.
-let segCache: { key: string; core: Int32Array; labels: Int32Array } | null = null
+// two slots so full-res and quarter-res preview runs don't evict each other
+const segCache = new Map<string, { core: Int32Array; labels: Int32Array }>()
 let flowCache: { key: string; flow: ReturnType<typeof flowField> } | null = null
 
 onmessage = (e: MessageEvent) => {
@@ -19,13 +20,15 @@ onmessage = (e: MessageEvent) => {
     const line = new Uint8Array(m.line)
     const ink = new Uint8Array(m.ink)
     let core: Int32Array, labels: Int32Array
-    if (segCache && segCache.key === m.segKey) {
-      core = segCache.core.slice()
-      labels = segCache.labels.slice()
+    const hit = segCache.get(m.segKey)
+    if (hit) {
+      core = hit.core.slice()
+      labels = hit.labels.slice()
     } else {
       ;({ core } = trappedBall(line, m.W, m.H, m.maxGap))
       labels = expandLabels(core, m.W, m.H)
-      segCache = { key: m.segKey, core: core.slice(), labels: labels.slice() }
+      segCache.set(m.segKey, { core: core.slice(), labels: labels.slice() })
+      for (const k of segCache.keys()) { if (segCache.size <= 2) break; segCache.delete(k) }
     }
     let { regions } = finalizeRegions(core, labels, m.W, m.H, m.minArea)
     if (mergeSlivers(core, labels, line, m.W, m.H, m.sliverW ?? 0)) {

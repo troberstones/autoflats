@@ -349,6 +349,104 @@ function mergeAlongStroke(pts: number[]) {
   status(`Merged ${merged.length} fill${merged.length > 1 ? 's' : ''} into "${a.name}"`)
 }
 
+// ---------- quarter-res live preview ----------
+function maxPool4(src: Uint8Array, W: number, H: number, W4: number, H4: number): Uint8Array {
+  const out = new Uint8Array(W4 * H4)
+  for (let y = 0; y < H; y++) {
+    const row = y * W, row4 = (y >> 2) * W4
+    for (let x = 0; x < W; x++) {
+      const v = src[row + x]
+      const o = row4 + (x >> 2)
+      if (v > out[o]) out[o] = v
+    }
+  }
+  return out
+}
+
+// Full pipeline at 1/4 resolution (~16x faster) for instant feedback while a
+// slider drags; the full-res auto re-flat lands after the drag settles.
+function runPreviewFlat() {
+  if (!doc.ink) return
+  cancelWork()
+  setBusy(true)
+  status('Preview…', true)
+  const tk = ++token
+  const W4 = Math.ceil(doc.W / 4), H4 = Math.ceil(doc.H / 4)
+  const p = params()
+  const ink4 = maxPool4(doc.ink, doc.W, doc.H, W4, H4)
+  const line4 = smoothMask(thresholdInk(ink4, p.thr), W4, H4, Math.round(p.smooth / 4), 3)
+  if (doc.barrierMask) {
+    const b4 = maxPool4(doc.barrierMask, doc.W, doc.H, W4, H4)
+    for (let i = 0; i < line4.length; i++) if (b4[i]) line4[i] = 1
+  }
+  worker.onmessage = ev => {
+    const m = ev.data
+    if (m.token !== tk) return
+    setBusy(false)
+    renderPreview(new Int32Array(m.labels), m.regions, W4, H4)
+  }
+  worker.postMessage({
+    t: 'flat', line: line4.buffer, ink: ink4.buffer, W: W4, H: H4,
+    maxGap: Math.max(1, Math.round(p.gap / 4)), minArea: Math.max(4, Math.round(p.min / 16)),
+    sliverW: Math.round(p.sliver / 4), autoMerge: ($<HTMLInputElement>('cMerge')).checked,
+    segKey: `pv|${W4}|${p.thr}|${p.smooth}|${p.gap}|${p.sat}|${strokesVersion}`,
+    flowKey: `pv|${W4}|${p.sat}`,
+    token: tk,
+  }, [line4.buffer, ink4.buffer])
+}
+
+function renderPreview(labels4: Int32Array, regions: Array<{ id: number; area: number; isBg: boolean }>, W4: number, H4: number) {
+  let maxId = 0
+  for (const r of regions) if (r.id > maxId) maxId = r.id
+  const cr = new Uint8Array(maxId + 1), cg = new Uint8Array(maxId + 1), cb = new Uint8Array(maxId + 1), ca = new Uint8Array(maxId + 1)
+  for (const r of regions) {
+    const [rr, gg, bb] = paletteColor(r.id)
+    cr[r.id] = rr; cg[r.id] = gg; cb[r.id] = bb; ca[r.id] = r.isBg ? 0 : 255
+  }
+  // steal colors from the current full-res fills by overlap so the preview
+  // doesn't flash a whole new palette
+  if (doc.labels) {
+    const lut = doc.rootLut()
+    const KEY = 1 << 20
+    const tally = new Map<number, number>()
+    for (let y4 = 0; y4 < H4; y4++) {
+      const y = Math.min(doc.H - 1, y4 * 4)
+      for (let x4 = 0; x4 < W4; x4++) {
+        const n = labels4[y4 * W4 + x4]
+        const o = lut[doc.labels[y * doc.W + Math.min(doc.W - 1, x4 * 4)]]
+        if (n && o) tally.set(n * KEY + o, (tally.get(n * KEY + o) ?? 0) + 1)
+      }
+    }
+    const best = new Map<number, [number, number]>()
+    for (const [k, c] of tally) {
+      const n = (k / KEY) | 0
+      if (!best.has(n) || c > best.get(n)![1]) best.set(n, [k % KEY, c])
+    }
+    for (const [n, [o]] of best) {
+      const or = doc.regions[o]
+      if (!or) continue
+      cr[n] = or.color[0]; cg[n] = or.color[1]; cb[n] = or.color[2]; ca[n] = or.visible ? 255 : 0
+    }
+  }
+  const img = new ImageData(W4, H4)
+  for (let i = 0; i < labels4.length; i++) {
+    const id = labels4[i], o = i * 4
+    img.data[o] = cr[id]; img.data[o + 1] = cg[id]; img.data[o + 2] = cb[id]; img.data[o + 3] = ca[id]
+  }
+  const cv = document.createElement('canvas')
+  cv.width = W4; cv.height = H4
+  cv.getContext('2d')!.putImageData(img, 0, 0)
+  view.fills = cv
+  view.render()
+}
+
+let quickTimer = 0
+function scheduleQuickFlat() {
+  if (!($<HTMLInputElement>('cAuto')).checked || !doc.labels) return
+  clearTimeout(quickTimer)
+  quickTimer = window.setTimeout(runPreviewFlat, 120)
+}
+
 // Cluster Small: merge small fills into the neighbor they share an un-inked border with
 function clusterSmall() {
   if (busy || !doc.labels) return
@@ -583,9 +681,9 @@ const schedulePreview = () => {
     rebuildLineCanvas()
   }, 150)
 }
-for (const id of ['sThr', 'sSat', 'sSm']) $(id).oninput = () => { sliderLive(); setDirty(true); schedulePreview() }
-for (const id of ['sGap', 'sMin', 'sSliv']) $(id).oninput = () => { sliderLive(); setDirty(true) }
-$('cMerge').onchange = () => setDirty(true)
+for (const id of ['sThr', 'sSat', 'sSm']) $(id).oninput = () => { sliderLive(); setDirty(true); schedulePreview(); scheduleQuickFlat() }
+for (const id of ['sGap', 'sMin', 'sSliv']) $(id).oninput = () => { sliderLive(); setDirty(true); scheduleQuickFlat() }
+$('cMerge').onchange = () => { setDirty(true); scheduleQuickFlat() }
 $('cAuto').onchange = () => { if (dirty) scheduleAutoFlat(0) }
 $('sOp').oninput = () => { view.lineOpacity = sl('sOp') / 100; view.render() }
 $('cLines').onchange = () => { view.showLines = ($<HTMLInputElement>('cLines')).checked; if (doc.src) rebuildLineCanvas() }

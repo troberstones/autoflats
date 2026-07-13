@@ -121,7 +121,7 @@ export class CanvasView {
       ctx.fillRect(0, 0, this.imgW, this.imgH)
       if (this.lineCv) ctx.drawImage(this.lineCv, 0, 0)
     } else {
-      if (this.fills) ctx.drawImage(this.fills, 0, 0)
+      if (this.fills) ctx.drawImage(this.fills, 0, 0, this.imgW, this.imgH)
       if (this.lineCv) {
         ctx.globalAlpha = this.lineOpacity
         ctx.drawImage(this.lineCv, 0, 0)
