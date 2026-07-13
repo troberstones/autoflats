@@ -30,5 +30,6 @@ npm run dev     # open http://localhost:5173
 - **Ink extraction** ([src/core/ink.ts](src/core/ink.ts)) — dark + desaturated = line; handles alpha-only PNGs and colored underdrawings.
 - **Trapped-ball segmentation** ([src/core/trappedBall.ts](src/core/trappedBall.ts)) — a ball of radius r can't pass a gap narrower than 2r; descending radii fill large areas safely, then small details, so nothing floods the whole image.
 - **Line-center expansion** ([src/core/expand.ts](src/core/expand.ts)) — regions grow into line pixels simultaneously and meet at the stroke's medial axis.
-- **Gap suggestions** ([src/core/gaps.ts](src/core/gaps.ts)) — skeleton endpoints paired across gaps, kept only if bridging would meaningfully split a region.
+- **Gap suggestions** ([src/core/gaps.ts](src/core/gaps.ts), [src/core/fronts.ts](src/core/fronts.ts)) — region-collision fronts and skeleton endpoints propose bridges; each must match stroke widths, follow the flow field, and survive a virtual-bridge split test. Bridges are flow-curved Hermite paths ([src/core/curves.ts](src/core/curves.ts)), shaped by a parallel partner stroke when one spans the gap.
+- **GPU (optional)** ([src/core/gpuGrow.ts](src/core/gpuGrow.ts)) — WebGPU iterative relaxation for the growth stages, automatic CPU fallback.
 - Segmentation runs in a Web Worker; the only runtime dependency is [ag-psd](https://github.com/Agamnentzar/ag-psd) for PSD writing.
