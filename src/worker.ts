@@ -6,13 +6,17 @@ import { distanceTransform } from './core/morphology.ts'
 import { flowField } from './core/flow.ts'
 import { analyzeFronts } from './core/fronts.ts'
 import { mergeSlivers } from './core/slivers.ts'
-import { curveBridge } from './core/curves.ts'
+import { curveBridge, coCompleteBridge } from './core/curves.ts'
 import type { Flow } from './core/flow.ts'
 
-// 4-tuples [x1,y1,x2,y2,...] -> flow-curved polylines (one per bridge)
-function toPaths(segs: number[], flow: Flow | null): number[][] {
+// 4-tuples [x1,y1,x2,y2,...] -> polylines: parallel-partner co-completion
+// when a partner stroke spans the gap, else flow-curved Hermite
+function toPaths(segs: number[], flow: Flow | null, line: Uint8Array, W: number, H: number): number[][] {
   const paths: number[][] = []
-  for (let i = 0; i < segs.length; i += 4) paths.push(curveBridge(segs[i], segs[i + 1], segs[i + 2], segs[i + 3], flow))
+  for (let i = 0; i < segs.length; i += 4) {
+    paths.push(coCompleteBridge(segs[i], segs[i + 1], segs[i + 2], segs[i + 3], line, W, H)
+      ?? curveBridge(segs[i], segs[i + 1], segs[i + 2], segs[i + 3], flow))
+  }
   return paths
 }
 
@@ -53,7 +57,7 @@ onmessage = (e: MessageEvent) => {
       // fronts changed after merging: recompute suggestions on the final labels
       res = analyzeFronts(labels, line, m.W, m.H, flow, maxBridge, bgLut(regions), false)
     }
-    postMessage({ t: 'flat', core: core.buffer, labels: labels.buffer, regions, paths: toPaths(res.segs, flow), token: m.token },
+    postMessage({ t: 'flat', core: core.buffer, labels: labels.buffer, regions, paths: toPaths(res.segs, flow, line, m.W, m.H), token: m.token },
       { transfer: [core.buffer, labels.buffer] })
   } else if (m.t === 'carve') {
     const res = carve(new Int32Array(m.core), new Uint8Array(m.line), m.W, m.H, m.idx, m.r, m.ink ? new Uint8Array(m.ink) : null)
@@ -116,7 +120,7 @@ onmessage = (e: MessageEvent) => {
       }
       if (!dup) segs.push(eps[i], eps[i + 1], eps[i + 2], eps[i + 3])
     }
-    postMessage({ t: 'gaps', paths: toPaths(segs.slice(0, 200 * 4), flow), token: m.token })
+    postMessage({ t: 'gaps', paths: toPaths(segs.slice(0, 200 * 4), flow, line, m.W, m.H), token: m.token })
   }
 }
 
