@@ -32,7 +32,7 @@ const status = (s: string, spin = false) => { const el = $('status'); el.textCon
 const setBusy = (b: boolean) => {
   busy = b
   for (const id of ['bFlat', 'bGaps', 'bAcceptAll', 'bReflat', 'bCluster', 'bExport']) ($(id) as HTMLButtonElement).disabled = b || !doc.src
-  ;($('bAcceptAll') as HTMLButtonElement).disabled = b || !view.segs.length
+  ;($('bAcceptAll') as HTMLButtonElement).disabled = b || !view.paths.length
 }
 const setDirty = (d: boolean) => {
   dirty = d
@@ -184,10 +184,10 @@ function runFlat(matchOld: boolean) {
       if (oldLabels && oldRegions && oldLut) matchColors(oldLabels, oldRegions, oldLut)
       if (prev.core) pushUndo({ label: 'flat', heavy: true, undo: () => { doc.core = prev.core; doc.labels = prev.labels; doc.regions = prev.regions; afterModelChange() } })
       setDirty(false)
-      view.segs = m.segs ?? []
+      view.paths = m.paths ?? []
       view.segFocus = -1
       afterModelChange()
-      status(`${m.regions.length} fills` + (view.segs.length ? ` · ${view.segs.length / 4} suggested gaps — Tab to review, click or Enter to bridge` : ''))
+      status(`${m.regions.length} fills` + (view.paths.length ? ` · ${view.paths.length} suggested gaps — Tab to review, click or Enter to bridge` : ''))
       setBusy(false)
     }
   }
@@ -244,7 +244,7 @@ view.onClick = (fx, fy, e) => {
   const x = fx | 0, y = fy | 0
   if (x < 0 || y < 0 || x >= doc.W || y >= doc.H) return
   // accepting a gap suggestion works with any tool
-  if (view.segs.length && acceptSegNear(fx, fy)) return
+  if (view.paths.length && acceptSegNear(fx, fy)) return
   if (!doc.labels) return
   const id = doc.root(doc.labels[y * doc.W + x])
   if (!id) return
@@ -499,11 +499,11 @@ function suggestGapsNow() {
   worker.onmessage = ev => {
     const m = ev.data
     if (m.token !== tk) return
-    view.segs = m.segs
+    view.paths = m.paths
     view.segFocus = -1
     view.render()
     setBusy(false)
-    status(m.segs.length ? `${m.segs.length / 4} gap suggestions — Tab to review, click or Enter to bridge, or Accept All` : 'No gaps found')
+    status(m.paths.length ? `${m.paths.length} gap suggestions — Tab to review, click or Enter to bridge, or Accept All` : 'No gaps found')
   }
   const labels = doc.labels ? doc.labels.slice() : null
   const ink = doc.ink!.slice()
@@ -513,21 +513,24 @@ function suggestGapsNow() {
 
 function acceptSegNear(x: number, y: number): boolean {
   const tol = 8 / view.scale
-  for (let i = 0; i < view.segs.length; i += 4) {
-    if (distToSeg(x, y, view.segs[i], view.segs[i + 1], view.segs[i + 2], view.segs[i + 3]) < tol) {
-      acceptSeg(i)
-      view.render()
-      return true
+  for (let pi = 0; pi < view.paths.length; pi++) {
+    const p = view.paths[pi]
+    for (let i = 0; i + 3 < p.length; i += 2) {
+      if (distToSeg(x, y, p[i], p[i + 1], p[i + 2], p[i + 3]) < tol) {
+        acceptSeg(pi)
+        view.render()
+        return true
+      }
     }
   }
   return false
 }
 
-function acceptSeg(i: number) {
-  const s: Stroke = { pts: view.segs.slice(i, i + 4), mode: 'draw' }
+function acceptSeg(pi: number) {
+  const s: Stroke = { pts: view.paths[pi], mode: 'draw' }
   doc.strokes.push(s)
-  view.segs.splice(i, 4)
-  if (view.segFocus * 4 >= view.segs.length) view.segFocus = view.segs.length ? 0 : -1
+  view.paths.splice(pi, 1)
+  if (view.segFocus >= view.paths.length) view.segFocus = view.paths.length ? 0 : -1
   pushUndo({ label: 'bridge', undo: () => { doc.strokes.splice(doc.strokes.indexOf(s), 1); rasterizeBarriers(); setDirty(true) } })
   rasterizeBarriers()
   setDirty(true)
@@ -554,7 +557,7 @@ async function openFile(f: File) {
   doc.strokes = []
   doc.barrierMask = new Uint8Array(doc.W * doc.H)
   undoStack.length = 0
-  view.segs = []
+  view.paths = []
   fillsCv = document.createElement('canvas'); fillsCv.width = doc.W; fillsCv.height = doc.H
   fillsCtx = fillsCv.getContext('2d')!
   fillsImg = new ImageData(doc.W, doc.H)
@@ -607,7 +610,7 @@ $('bReflat').onclick = () => runFlat(true)
 $('bCluster').onclick = clusterSmall
 $('bGaps').onclick = suggestGapsNow
 $('bAcceptAll').onclick = () => {
-  while (view.segs.length) acceptSeg(0)
+  while (view.paths.length) acceptSeg(0)
   view.render()
   runFlat(true)
 }
@@ -629,11 +632,12 @@ function doUndo() {
 }
 
 function focusSeg(dir: number) {
-  const n = view.segs.length / 4
+  const n = view.paths.length
   if (!n) return
   view.segFocus = ((view.segFocus + dir) % n + n) % n
-  const i = view.segFocus * 4
-  const mx = (view.segs[i] + view.segs[i + 2]) / 2, my = (view.segs[i + 1] + view.segs[i + 3]) / 2
+  const p = view.paths[view.segFocus]
+  const mid = (p.length >> 2) << 1
+  const mx = p[mid], my = p[mid + 1]
   if (view.scale < 1) view.scale = 1.5
   view.ox = view.canvas.width / 2 - mx * view.scale
   view.oy = view.canvas.height / 2 - my * view.scale
@@ -645,9 +649,9 @@ addEventListener('keydown', e => {
   if (e.target instanceof HTMLInputElement) return
   if ((e.metaKey || e.ctrlKey) && e.key === 'z') { e.preventDefault(); doUndo(); return }
   if (e.key === 'Tab') { e.preventDefault(); focusSeg(e.shiftKey ? -1 : 1); return }
-  if (e.key === 'Enter' && view.segFocus >= 0 && view.segs.length) {
+  if (e.key === 'Enter' && view.segFocus >= 0 && view.paths.length) {
     e.preventDefault()
-    acceptSeg(view.segFocus * 4)
+    acceptSeg(view.segFocus)
     if (view.segFocus >= 0) focusSeg(0)
     else { view.render(); status('Bridged — Re-Flat to apply') }
     return

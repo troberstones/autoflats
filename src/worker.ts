@@ -6,6 +6,15 @@ import { distanceTransform } from './core/morphology.ts'
 import { flowField } from './core/flow.ts'
 import { analyzeFronts } from './core/fronts.ts'
 import { mergeSlivers } from './core/slivers.ts'
+import { curveBridge } from './core/curves.ts'
+import type { Flow } from './core/flow.ts'
+
+// 4-tuples [x1,y1,x2,y2,...] -> flow-curved polylines (one per bridge)
+function toPaths(segs: number[], flow: Flow | null): number[][] {
+  const paths: number[][] = []
+  for (let i = 0; i < segs.length; i += 4) paths.push(curveBridge(segs[i], segs[i + 1], segs[i + 2], segs[i + 3], flow))
+  return paths
+}
 
 // Stage caches: raw segmentation is the expensive stage; postprocess-only
 // parameter changes (min region, sliver, auto-merge) reuse it. The flow field
@@ -44,7 +53,7 @@ onmessage = (e: MessageEvent) => {
       // fronts changed after merging: recompute suggestions on the final labels
       res = analyzeFronts(labels, line, m.W, m.H, flow, maxBridge, bgLut(regions), false)
     }
-    postMessage({ t: 'flat', core: core.buffer, labels: labels.buffer, regions, segs: res.segs, token: m.token },
+    postMessage({ t: 'flat', core: core.buffer, labels: labels.buffer, regions, paths: toPaths(res.segs, flow), token: m.token },
       { transfer: [core.buffer, labels.buffer] })
   } else if (m.t === 'carve') {
     const res = carve(new Int32Array(m.core), new Uint8Array(m.line), m.W, m.H, m.idx, m.r, m.ink ? new Uint8Array(m.ink) : null)
@@ -94,10 +103,9 @@ onmessage = (e: MessageEvent) => {
     const labels = m.labels ? new Int32Array(m.labels) : null
     const maxBridge = Math.max(6, m.maxGap * 2 + 4)
     let segs: number[] = []
-    if (labels && m.ink) {
-      const flow = flowField(new Uint8Array(m.ink), m.W, m.H)
-      segs = analyzeFronts(labels, line, m.W, m.H, flow, maxBridge, null, false).segs
-    }
+    let flow: Flow | null = null
+    if (m.ink) flow = flowField(new Uint8Array(m.ink), m.W, m.H)
+    if (labels && flow) segs = analyzeFronts(labels, line, m.W, m.H, flow, maxBridge, null, false).segs
     // skeleton-endpoint fallback catches shapes that leaked fully into bg
     const eps = suggestGaps(line, m.W, m.H, m.maxGap, labels)
     for (let i = 0; i < eps.length; i += 4) {
@@ -108,7 +116,7 @@ onmessage = (e: MessageEvent) => {
       }
       if (!dup) segs.push(eps[i], eps[i + 1], eps[i + 2], eps[i + 3])
     }
-    postMessage({ t: 'gaps', segs: segs.slice(0, 200 * 4), token: m.token })
+    postMessage({ t: 'gaps', paths: toPaths(segs.slice(0, 200 * 4), flow), token: m.token })
   }
 }
 

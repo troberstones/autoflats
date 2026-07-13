@@ -14,7 +14,7 @@ export class CanvasView {
   lineOpacity = 1
   showLines = false
   showBarriers = true
-  segs: number[] = []
+  paths: number[][] = [] // gap-bridge suggestions, each a polyline [x0,y0,x1,y1,...]
   segFocus = -1
   imgW = 0
   imgH = 0
@@ -142,26 +142,27 @@ export class CanvasView {
       for (let i = 2; i < this.stroke.length; i += 2) ctx.lineTo(this.stroke[i], this.stroke[i + 1])
       ctx.stroke()
     }
-    // gap suggestions: white halo + orange line, constant screen-space width
-    if (this.segs.length) {
-      ctx.lineCap = 'round'
+    // gap suggestions: white halo + orange curve, constant screen-space width
+    if (this.paths.length) {
+      ctx.lineCap = ctx.lineJoin = 'round'
       const rr = 5 / this.scale
-      for (let i = 0; i < this.segs.length; i += 4) {
-        const focused = i === this.segFocus * 4
-        const seg = () => {
+      for (let pi = 0; pi < this.paths.length; pi++) {
+        const p = this.paths[pi]
+        const focused = pi === this.segFocus
+        const poly = () => {
           ctx.beginPath()
-          ctx.moveTo(this.segs[i], this.segs[i + 1])
-          ctx.lineTo(this.segs[i + 2], this.segs[i + 3])
+          ctx.moveTo(p[0], p[1])
+          for (let i = 2; i < p.length; i += 2) ctx.lineTo(p[i], p[i + 1])
           ctx.stroke()
         }
         ctx.strokeStyle = 'rgba(255,255,255,0.95)'
         ctx.lineWidth = (focused ? 9 : 7) / this.scale
-        seg()
+        poly()
         ctx.strokeStyle = focused ? '#ff2d55' : '#ff8800'
         ctx.lineWidth = (focused ? 4.5 : 3) / this.scale
-        seg()
+        poly()
         ctx.fillStyle = ctx.strokeStyle
-        for (const [x, y] of [[this.segs[i], this.segs[i + 1]], [this.segs[i + 2], this.segs[i + 3]]]) {
+        for (const [x, y] of [[p[0], p[1]], [p[p.length - 2], p[p.length - 1]]]) {
           ctx.beginPath()
           ctx.arc(x, y, rr, 0, 7)
           ctx.fill()
