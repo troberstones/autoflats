@@ -13,6 +13,10 @@ export interface FrontsResult { merges: Array<[number, number]>; segs: number[] 
 export function analyzeFronts(labels: Int32Array, line: Uint8Array, W: number, H: number,
   flow: Flow, maxBridge: number, isBg: Uint8Array | null, doMerge: boolean): FrontsResult {
   const ld = distanceTransform(line, W, H)
+  // stroke half-width at line pixels = distance to free space (similarity cue)
+  const inv = new Uint8Array(W * H)
+  for (let i = 0; i < inv.length; i++) inv[i] = line[i] ? 0 : 1
+  const wd = distanceTransform(inv, W, H)
   const OPEN = 7 // > ~2.3 px from any line = open space
   const KEY = 1 << 20
 
@@ -69,7 +73,7 @@ export function analyzeFronts(labels: Int32Array, line: Uint8Array, W: number, H
       continue
     }
     // suggest a bridge across the narrowest open point
-    const seg = bridgeAt(p.tx, p.ty, line, W, H, flow, maxBridge)
+    const seg = bridgeAt(p.tx, p.ty, line, W, H, flow, maxBridge, wd)
     if (seg) cands.push([p.tmin, seg])
   }
   cands.sort((a, b) => a[0] - b[0])
@@ -78,10 +82,26 @@ export function analyzeFronts(labels: Int32Array, line: Uint8Array, W: number, H
   return { merges, segs }
 }
 
+function localWidth(wd: Int32Array, i: number, W: number, H: number): number {
+  const x = i % W, y = (i / W) | 0
+  let mx = 0
+  for (let dy = -3; dy <= 3; dy++) {
+    const yy = y + dy
+    if (yy < 0 || yy >= H) continue
+    for (let dx = -3; dx <= 3; dx++) {
+      const xx = x + dx
+      if (xx < 0 || xx >= W) continue
+      const v = wd[yy * W + xx]
+      if (v > mx) mx = v
+    }
+  }
+  return mx
+}
+
 // Build a bridge through open point (tx,ty): nearest line pixel on one side,
 // then march the opposite way to the line pixel on the other side.
 function bridgeAt(tx: number, ty: number, line: Uint8Array, W: number, H: number,
-  flow: Flow, maxBridge: number): number[] | null {
+  flow: Flow, maxBridge: number, wd: Int32Array): number[] | null {
   let l1 = -1, d1 = 1e9
   const R = Math.min(maxBridge, 40)
   for (let dy = -R; dy <= R; dy++) {
@@ -102,6 +122,11 @@ function bridgeAt(tx: number, ty: number, line: Uint8Array, W: number, H: number
     const x = Math.round(tx + vx * s), y = Math.round(ty + vy * s)
     if (x < 0 || y < 0 || x >= W || y >= H) return null
     if (!line[y * W + x]) continue
+    // similarity: don't bridge a thick contour to thin hatching.
+    // Anchors sit on stroke EDGES where wd≈1px, so sample the local max
+    // (the stroke's half-width) in a 7x7 window.
+    const w1 = localWidth(wd, l1, W, H), w2 = localWidth(wd, y * W + x, W, H)
+    if (Math.max(w1, w2) > 2.5 * Math.min(w1, w2) + 3) return null
     // flow check: the bridge should run along stroke tangents at its anchors
     const bl = Math.hypot(x - x1, y - y1) || 1
     const bx = (x - x1) / bl, by = (y - y1) / bl

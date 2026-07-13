@@ -1,9 +1,15 @@
+import { distanceTransform } from './morphology.ts'
+
 // Gap-bridge suggestions: thin the line mask (Zhang-Suen), find stroke
 // endpoints, pair nearby endpoints (or endpoint -> nearby stroke) that aren't
 // already connected along the skeleton. If labels are given, only bridges
 // where the SAME fill region flows through the gap are kept — i.e. gaps that
 // actually caused (or would cause) a leak. Returns [x1,y1,x2,y2, ...].
 export function suggestGaps(line: Uint8Array, W: number, H: number, maxGap: number, labels?: Int32Array | null): number[] {
+  // stroke half-width at skeleton pixels (similarity cue for pairing)
+  const inv = new Uint8Array(W * H)
+  for (let i = 0; i < inv.length; i++) inv[i] = line[i] ? 0 : 1
+  const wd = distanceTransform(inv, W, H)
   const sk = line.slice()
   // zero the border so 3x3 lookups need no bounds checks
   for (let x = 0; x < W; x++) { sk[x] = 0; sk[(H - 1) * W + x] = 0 }
@@ -38,6 +44,9 @@ export function suggestGaps(line: Uint8Array, W: number, H: number, maxGap: numb
       const d = Math.hypot(A.x - B.x, A.y - B.y)
       if (d > maxBridge || d < 2) continue
       if (A.branch.has(B.i)) continue // already connected along the stroke
+      // similar stroke widths (don't join a contour break to thin hatching)
+      const wa = wd[A.i], wb = wd[B.i]
+      if (Math.max(wa, wb) > 2.5 * Math.min(wa, wb) + 3) continue
       // near-collinear continuation at BOTH ends (±45°) — kills bridges that
       // cut across open space between unrelated stroke tips
       if (A.dx * (B.x - A.x) + A.dy * (B.y - A.y) < 0.7 * d) continue
