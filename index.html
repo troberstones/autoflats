@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>autoFlats</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; margin: 0; }
+  body { font: 13px system-ui, sans-serif; background: #222; color: #ddd; height: 100vh;
+         display: grid; grid-template-rows: auto 1fr auto; grid-template-columns: 44px 1fr 240px;
+         grid-template-areas: "menu menu menu" "tools canvas layers" "ctrl ctrl ctrl"; }
+  #menu { grid-area: menu; display: flex; gap: 6px; padding: 6px 10px; background: #2c2c2c; align-items: center; border-bottom: 1px solid #111; }
+  #tools { grid-area: tools; display: flex; flex-direction: column; gap: 4px; padding: 6px 4px; background: #2c2c2c; border-right: 1px solid #111; }
+  #wrap { grid-area: canvas; position: relative; overflow: hidden; }
+  #view { position: absolute; inset: 0; width: 100%; height: 100%; touch-action: none; }
+  #layers { grid-area: layers; overflow-y: auto; background: #2c2c2c; border-left: 1px solid #111; padding: 4px; }
+  #ctrl { grid-area: ctrl; display: flex; gap: 14px; padding: 6px 10px; background: #2c2c2c; border-top: 1px solid #111; align-items: center; flex-wrap: wrap; }
+  button { background: #444; color: #ddd; border: 1px solid #555; border-radius: 4px; padding: 4px 10px; cursor: pointer; }
+  button:hover { background: #505050; }
+  button:disabled { opacity: .4; cursor: default; }
+  button.active { background: #2a6cd4; border-color: #2a6cd4; color: #fff; }
+  #tools button { padding: 8px 0; font-size: 15px; }
+  label.s { display: flex; gap: 6px; align-items: center; white-space: nowrap; }
+  input[type=range] { width: 90px; }
+  .row { display: flex; align-items: center; gap: 6px; padding: 3px 4px; border-radius: 4px; cursor: pointer; }
+  .row:hover { background: #383838; }
+  .row.sel { background: #2a4a74; }
+  .row .nm { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .row .ar { color: #888; font-size: 11px; }
+  .row input[type=color] { width: 22px; height: 22px; padding: 0; border: none; background: none; }
+  #status { margin-left: auto; color: #999; }
+  #badge { color: #ffa030; display: none; }
+  .spin { color: #6cf; }
+</style>
+</head>
+<body>
+  <div id="menu">
+    <button id="bOpen">Open…</button>
+    <button id="bFlat" disabled>Auto Flat</button>
+    <button id="bGaps" disabled>Suggest Gaps</button>
+    <button id="bAcceptAll" disabled>Accept All Gaps</button>
+    <button id="bReflat" disabled>Re-Flat</button>
+    <button id="bCluster" disabled title="Merge small fills into the neighbor they share an un-inked border with">Cluster Small</button>
+    <span id="badge">● changes need Re-Flat</span>
+    <button id="bExport" disabled>Export PSD</button>
+    <label class="s">Fill color <input type="color" id="curColor" value="#c8e0f0"></label>
+    <label class="s" title="Bucket picks a random color per fill"><input type="checkbox" id="cRand"> Random</label>
+    <span id="status">Open a line-art image to begin</span>
+  </div>
+  <div id="tools">
+    <button id="tPan"     title="Pan (V / hold Space)">✋</button>
+    <button id="tFill"    title="Fill / recolor region (B). Click background to carve a new fill. Alt-click: pick color">🪣</button>
+    <button id="tBarrier" title="Barrier pen (G): draw invisible gap-closing lines">🖊</button>
+    <button id="tEraser"  title="Barrier eraser (E)">🧽</button>
+    <button id="tMerge"   title="Merge regions (M): click two regions">⧉</button>
+    <button id="tDraw"    title="Draw merge (D): stroke from a fill — every fill the stroke crosses merges into it">🧲</button>
+  </div>
+  <div id="wrap"><canvas id="view"></canvas></div>
+  <div id="layers"></div>
+  <div id="ctrl">
+    <label class="s">Line threshold <input type="range" id="sThr" min="5" max="90" value="25"><span id="vThr">25%</span></label>
+    <label class="s">Color reject <input type="range" id="sSat" min="5" max="100" value="30"><span id="vSat">30%</span></label>
+    <label class="s">Smoothing <input type="range" id="sSm" min="0" max="4" value="1"><span id="vSm">1px</span></label>
+    <label class="s">Gap size <input type="range" id="sGap" min="1" max="32" value="8"><span id="vGap">8px</span></label>
+    <label class="s">Min region <input type="range" id="sMin" min="0" max="500" value="150"><span id="vMin">150px²</span></label>
+    <label class="s" title="Merge fills thinner than this everywhere — the space between parallel/double strokes. 0 = off">Sliver width <input type="range" id="sSliv" min="0" max="8" value="3"><span id="vSliv">3px</span></label>
+    <label class="s" title="Merge fill fragments whose shared border crosses open space against the stroke flow"><input type="checkbox" id="cMerge" checked> Auto-merge leaks</label>
+    <label class="s" title="Re-flat automatically after tuning a parameter"><input type="checkbox" id="cAuto"> Auto re-flat</label>
+    <label class="s">Line opacity <input type="range" id="sOp" min="0" max="100" value="100"></label>
+    <label class="s"><input type="checkbox" id="cLines"> Show extracted lines</label>
+    <button id="bUndo" disabled>Undo ⌘Z</button>
+  </div>
+  <input type="file" id="file" accept="image/*" hidden>
+  <script type="module" src="/src/main.ts"></script>
+</body>
+</html>
