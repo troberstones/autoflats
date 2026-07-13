@@ -1,4 +1,5 @@
-import { trappedBall } from './core/trappedBall.ts'
+import { trappedBall, labelPockets } from './core/trappedBall.ts'
+import { GpuGrower } from './core/gpuGrow.ts'
 import { expandLabels } from './core/expand.ts'
 import { finalizeRegions, type RegionInfo } from './core/regions.ts'
 import { suggestGaps } from './core/gaps.ts'
@@ -27,7 +28,26 @@ function toPaths(segs: number[], flow: Flow | null, line: Uint8Array, W: number,
 const segCache = new Map<string, { core: Int32Array; labels: Int32Array }>()
 let flowCache: { key: string; flow: ReturnType<typeof flowField> } | null = null
 
-onmessage = (e: MessageEvent) => {
+// GPU growth: lazy init; any failure permanently falls back to CPU
+let gpu: GpuGrower | null | undefined // undefined = not tried yet
+async function segment(line: Uint8Array, ink: Uint8Array, W: number, H: number, maxGap: number, useGpu: boolean) {
+  if (useGpu && gpu === undefined) gpu = await GpuGrower.create()
+  if (useGpu && gpu) {
+    try {
+      const { core: seeds } = trappedBall(line, W, H, maxGap, ink, false)
+      const core = await gpu.grow(seeds, line, ink, W, H)   // leftover attachment
+      labelPockets(core, line, W, H)
+      const labels = await gpu.grow(core.slice(), null, ink, W, H) // under-line expansion
+      return { core, labels }
+    } catch {
+      gpu = null // device lost or unsupported op: CPU from now on
+    }
+  }
+  const { core } = trappedBall(line, W, H, maxGap, ink)
+  return { core, labels: expandLabels(core, W, H, ink) }
+}
+
+onmessage = async (e: MessageEvent) => {
   const m = e.data
   if (m.t === 'flat') {
     const line = new Uint8Array(m.line)
@@ -38,8 +58,7 @@ onmessage = (e: MessageEvent) => {
       core = hit.core.slice()
       labels = hit.labels.slice()
     } else {
-      ;({ core } = trappedBall(line, m.W, m.H, m.maxGap, ink))
-      labels = expandLabels(core, m.W, m.H, ink)
+      ;({ core, labels } = await segment(line, ink, m.W, m.H, m.maxGap, !!m.useGpu && m.W * m.H > 2e6))
       segCache.set(m.segKey, { core: core.slice(), labels: labels.slice() })
       for (const k of segCache.keys()) { if (segCache.size <= 2) break; segCache.delete(k) }
     }

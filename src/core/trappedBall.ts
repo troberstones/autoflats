@@ -8,7 +8,9 @@ import { growLabels } from './expand.ts'
 // Leftover free pixels (bands hugging strokes, wedges) are then assigned to
 // their nearest connected region — never fragmented into slivers — and only
 // truly enclosed pockets become new regions.
-export function trappedBall(line: Uint8Array, W: number, H: number, maxGap: number, ink?: Uint8Array | null) {
+// attach=false skips the final leftover-attachment growth and pocket labeling
+// (the worker substitutes a GPU-accelerated growth, then calls labelPockets).
+export function trappedBall(line: Uint8Array, W: number, H: number, maxGap: number, ink?: Uint8Array | null, attach = true) {
   const N = W * H
   const dist = distanceTransform(line, W, H)
   const core = new Int32Array(N)
@@ -17,25 +19,6 @@ export function trappedBall(line: Uint8Array, W: number, H: number, maxGap: numb
 
   const radii: number[] = []
   for (let r = Math.max(1, maxGap); r >= 1; r = r > 4 ? r >> 1 : r - 1) radii.push(r)
-
-  const flood = (s: number, id: number, fits: (q: number) => boolean): number => {
-    let sp = 0, qt = 0
-    core[s] = id
-    queue[qt++] = s
-    while (sp < qt) {
-      const p = queue[sp++]
-      const x = p % W
-      let q = p - 1
-      if (x > 0 && !core[q] && fits(q)) { core[q] = id; queue[qt++] = q }
-      q = p + 1
-      if (x < W - 1 && !core[q] && fits(q)) { core[q] = id; queue[qt++] = q }
-      q = p - W
-      if (q >= 0 && !core[q] && fits(q)) { core[q] = id; queue[qt++] = q }
-      q = p + W
-      if (q < N && !core[q] && fits(q)) { core[q] = id; queue[qt++] = q }
-    }
-    return qt
-  }
 
   for (const r of radii) {
     const thr = r * 3
@@ -63,14 +46,38 @@ export function trappedBall(line: Uint8Array, W: number, H: number, maxGap: numb
     if (total) growLabels(core, W, H, { blocked: line, maxCost: thr, seeds: queue.subarray(0, total) })
   }
 
-  // attach every remaining free pixel to its nearest connected region;
-  // ink-weighted so faint sub-threshold strokes still act as soft walls
-  growLabels(core, W, H, { blocked: line, cost: ink ?? null })
-
-  // enclosed pockets unreachable from any region become their own regions
-  for (let s = 0; s < N; s++) {
-    if (!core[s] && !line[s]) flood(s, ++next, q => !line[q])
+  if (attach) {
+    // attach every remaining free pixel to its nearest connected region;
+    // ink-weighted so faint sub-threshold strokes still act as soft walls
+    growLabels(core, W, H, { blocked: line, cost: ink ?? null })
+    next = labelPockets(core, line, W, H)
   }
 
   return { core, count: next }
+}
+
+// Enclosed pockets unreachable from any region become their own regions.
+// Returns the highest label id in use.
+export function labelPockets(core: Int32Array, line: Uint8Array, W: number, H: number): number {
+  const N = W * H
+  let next = 0
+  for (let i = 0; i < N; i++) if (core[i] > next) next = core[i]
+  const stack: number[] = []
+  for (let s = 0; s < N; s++) {
+    if (core[s] || line[s]) continue
+    const id = ++next
+    core[s] = id
+    stack.length = 0
+    stack.push(s)
+    while (stack.length) {
+      const p = stack.pop()!
+      const x = p % W
+      for (const q of [x > 0 ? p - 1 : -1, x < W - 1 ? p + 1 : -1, p - W, p + W]) {
+        if (q < 0 || q >= N || core[q] || line[q]) continue
+        core[q] = id
+        stack.push(q)
+      }
+    }
+  }
+  return next
 }

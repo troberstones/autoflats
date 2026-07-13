@@ -198,6 +198,7 @@ function runFlat(matchOld: boolean) {
     maxGap: p.gap, minArea: p.min, sliverW: p.sliver, autoMerge: ($<HTMLInputElement>('cMerge')).checked,
     segKey: `${doc.W}|${p.thr}|${p.smooth}|${p.gap}|${p.sat}|${strokesVersion}`,
     flowKey: `${doc.W}|${p.sat}`,
+    useGpu: ($<HTMLInputElement>('cGpu')).checked,
     token: tk,
   }, [line.buffer, ink.buffer])
 }
@@ -698,6 +699,7 @@ addEventListener('dragover', e => e.preventDefault())
 addEventListener('drop', e => { e.preventDefault(); const f = e.dataTransfer?.files?.[0]; if (f) openFile(f) })
 
 setTool('pan')
+if ((navigator as any).gpu) $('lGpu').hidden = false
 // automation/test hook
 ;(window as any).__openUrl = async (u: string) =>
   openFile(new File([await (await fetch(u)).blob()], u.split('/').pop() || 'img.png'))
