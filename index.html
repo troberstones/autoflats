@@ -61,6 +61,7 @@
     <label class="s">Line threshold <input type="range" id="sThr" min="5" max="90" value="25"><span id="vThr">25%</span></label>
     <label class="s">Color reject <input type="range" id="sSat" min="5" max="100" value="30"><span id="vSat">30%</span></label>
     <label class="s">Smoothing <input type="range" id="sSm" min="0" max="4" value="1"><span id="vSm">1px</span></label>
+    <label class="s" title="Erode lines to a 1px skeleton before filling, so gap size &amp; matching ignore stroke thickness"><input type="checkbox" id="cSkel"> Skeletonize</label>
     <label class="s">Gap size <input type="range" id="sGap" min="1" max="32" value="8"><span id="vGap">8px</span></label>
     <label class="s">Min region <input type="range" id="sMin" min="0" max="500" value="150"><span id="vMin">150px²</span></label>
     <label class="s" title="Merge fills thinner than this everywhere — the space between parallel/double strokes. 0 = off">Sliver width <input type="range" id="sSliv" min="0" max="8" value="3"><span id="vSliv">3px</span></label>

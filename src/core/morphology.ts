@@ -1,3 +1,45 @@
+// Zhang-Suen thinning to a 1px 8-connected skeleton (returns a new mask).
+// Erodes strokes to their centreline so downstream stages see uniform 1px
+// lines — gap size and width matching stop depending on how thick the artist
+// drew, and fills grow up to the centreline (no fringe). A 4-connected flood
+// cannot cross an 8-connected skeleton, so it remains a valid barrier.
+export function skeletonize(mask: Uint8Array, W: number, H: number): Uint8Array {
+  const sk = mask.slice()
+  for (let x = 0; x < W; x++) { sk[x] = 0; sk[(H - 1) * W + x] = 0 }
+  for (let y = 0; y < H; y++) { sk[y * W] = 0; sk[y * W + W - 1] = 0 }
+  let cand: number[] = []
+  for (let i = 0; i < sk.length; i++) if (sk[i]) cand.push(i)
+  for (let iter = 0; iter < 300 && cand.length; iter++) {
+    const next = new Set<number>()
+    let removed = false
+    for (let phase = 0; phase < 2; phase++) {
+      const del: number[] = []
+      for (const i of cand) {
+        if (!sk[i]) continue
+        const p2 = sk[i - W], p3 = sk[i - W + 1], p4 = sk[i + 1], p5 = sk[i + W + 1],
+              p6 = sk[i + W], p7 = sk[i + W - 1], p8 = sk[i - 1], p9 = sk[i - W - 1]
+        const B = p2 + p3 + p4 + p5 + p6 + p7 + p8 + p9
+        if (B < 2 || B > 6) continue
+        let A = 0
+        if (!p2 && p3) A++; if (!p3 && p4) A++; if (!p4 && p5) A++; if (!p5 && p6) A++
+        if (!p6 && p7) A++; if (!p7 && p8) A++; if (!p8 && p9) A++; if (!p9 && p2) A++
+        if (A !== 1) continue
+        if (phase === 0) { if (p2 * p4 * p6 || p4 * p6 * p8) continue }
+        else { if (p2 * p4 * p8 || p2 * p6 * p8) continue }
+        del.push(i)
+      }
+      for (const i of del) {
+        sk[i] = 0
+        removed = true
+        for (const d of [-W - 1, -W, -W + 1, -1, 1, W - 1, W, W + 1]) if (sk[i + d]) next.add(i + d)
+      }
+    }
+    if (!removed) break
+    cand = [...next]
+  }
+  return sk
+}
+
 // Morphological closing (radius r px) + despeckle: seals pinholes and ragged
 // texture in grainy strokes, drops isolated specks. Superset of the input
 // line pixels is guaranteed.

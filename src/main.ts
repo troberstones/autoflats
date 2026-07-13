@@ -1,7 +1,7 @@
 import { Doc, Region, Stroke, UndoOp, paletteColor, rgbToHex, hexToRgb, hslToRgb } from './state.ts'
 import { CanvasView, Tool } from './ui/canvasView.ts'
 import { extractInk, thresholdInk } from './core/ink.ts'
-import { smoothMask } from './core/morphology.ts'
+import { smoothMask, skeletonize } from './core/morphology.ts'
 import { exportPsd, ExportRegion } from './core/psd.ts'
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T
@@ -63,8 +63,10 @@ const pickColor = (): [number, number, number] =>
 const params = () => ({ thr: sl('sThr') / 100, sat: sl('sSat') / 100, gap: sl('sGap'), min: sl('sMin'), smooth: sl('sSm'), sliver: sl('sSliv') })
 
 function currentLineMask(includeBarriers = true): Uint8Array {
-  const line = smoothMask(thresholdInk(doc.ink!, params().thr), doc.W, doc.H, params().smooth)
+  let line = smoothMask(thresholdInk(doc.ink!, params().thr), doc.W, doc.H, params().smooth)
   if (includeBarriers && doc.barrierMask) for (let i = 0; i < line.length; i++) if (doc.barrierMask[i]) line[i] = 1
+  // erode to a 1px skeleton so segmentation is independent of stroke thickness
+  if (($<HTMLInputElement>('cSkel')).checked) line = skeletonize(line, doc.W, doc.H)
   return line
 }
 
@@ -196,7 +198,7 @@ function runFlat(matchOld: boolean) {
   worker.postMessage({
     t: 'flat', line: line.buffer, ink: ink.buffer, W: doc.W, H: doc.H,
     maxGap: p.gap, minArea: p.min, sliverW: p.sliver, autoMerge: ($<HTMLInputElement>('cMerge')).checked,
-    segKey: `${doc.W}|${p.thr}|${p.smooth}|${p.gap}|${p.sat}|${strokesVersion}`,
+    segKey: `${doc.W}|${p.thr}|${p.smooth}|${p.gap}|${p.sat}|${strokesVersion}|${($<HTMLInputElement>('cSkel')).checked}`,
     flowKey: `${doc.W}|${p.sat}`,
     useGpu: ($<HTMLInputElement>('cGpu')).checked,
     token: tk,
@@ -376,11 +378,12 @@ function runPreviewFlat() {
   const W4 = Math.ceil(doc.W / 4), H4 = Math.ceil(doc.H / 4)
   const p = params()
   const ink4 = maxPool4(doc.ink, doc.W, doc.H, W4, H4)
-  const line4 = smoothMask(thresholdInk(ink4, p.thr), W4, H4, Math.round(p.smooth / 4), 3)
+  let line4 = smoothMask(thresholdInk(ink4, p.thr), W4, H4, Math.round(p.smooth / 4), 3)
   if (doc.barrierMask) {
     const b4 = maxPool4(doc.barrierMask, doc.W, doc.H, W4, H4)
     for (let i = 0; i < line4.length; i++) if (b4[i]) line4[i] = 1
   }
+  if (($<HTMLInputElement>('cSkel')).checked) line4 = skeletonize(line4, W4, H4)
   worker.onmessage = ev => {
     const m = ev.data
     if (m.token !== tk) return
@@ -391,7 +394,7 @@ function runPreviewFlat() {
     t: 'flat', line: line4.buffer, ink: ink4.buffer, W: W4, H: H4,
     maxGap: Math.max(1, Math.round(p.gap / 4)), minArea: Math.max(4, Math.round(p.min / 16)),
     sliverW: Math.round(p.sliver / 4), autoMerge: ($<HTMLInputElement>('cMerge')).checked,
-    segKey: `pv|${W4}|${p.thr}|${p.smooth}|${p.gap}|${p.sat}|${strokesVersion}`,
+    segKey: `pv|${W4}|${p.thr}|${p.smooth}|${p.gap}|${p.sat}|${strokesVersion}|${($<HTMLInputElement>('cSkel')).checked}`,
     flowKey: `pv|${W4}|${p.sat}`,
     token: tk,
   }, [line4.buffer, ink4.buffer])
@@ -690,6 +693,7 @@ const schedulePreview = () => {
 for (const id of ['sThr', 'sSat', 'sSm']) $(id).oninput = () => { sliderLive(); setDirty(true); schedulePreview(); scheduleQuickFlat() }
 for (const id of ['sGap', 'sMin', 'sSliv']) $(id).oninput = () => { sliderLive(); setDirty(true); scheduleQuickFlat() }
 $('cMerge').onchange = () => { setDirty(true); scheduleQuickFlat() }
+$('cSkel').onchange = () => { if (doc.src) rebuildLineCanvas(); setDirty(true); scheduleQuickFlat() }
 $('cAuto').onchange = () => { if (dirty) scheduleAutoFlat(0) }
 $('sOp').oninput = () => { view.lineOpacity = sl('sOp') / 100; view.render() }
 $('cLines').onchange = () => { view.showLines = ($<HTMLInputElement>('cLines')).checked; if (doc.src) rebuildLineCanvas() }

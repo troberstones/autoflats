@@ -17,6 +17,7 @@ npm run dev     # open http://localhost:5173
    - **Line threshold** — how dark a pixel must be to count as line (raise for faint sketch lines).
    - **Color reject** — saturation above this is ignored (drops colored underdrawings, e.g. red construction lines).
    - **Smoothing** — morphological closing of the line mask before segmentation; seals pinholes/texture in grainy strokes (exported line art is untouched).
+   - **Skeletonize** — erode the line mask to a 1px centreline (Zhang-Suen) before filling, so gap size and stroke-width matching stop depending on how thick the artist drew, and fills grow right to the centreline. The overlaid/exported line art stays the original thick art.
    - **Gap size** — trapped-ball radius; gaps narrower than ~2× this won't leak.
    - **Min region** — smaller regions are absorbed into their biggest neighbor.
    - **Sliver width** — fills thinner than this *everywhere* (the space trapped between parallel/double strokes) merge into the area they open into. 0 disables.
