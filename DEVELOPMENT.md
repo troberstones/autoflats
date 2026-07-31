@@ -41,6 +41,7 @@ src/
     slivers.ts        merge corridor slivers (space between parallel strokes)
     fronts.ts         region-collision analysis: auto-merge leaks + bridge suggestions
     flow.ts           stroke-orientation field (structure tensor at 1/4 res)
+    relatability.ts   Kellman-Shipley relatability gate + Euler elastica energy/shape
     curves.ts         curved (Hermite) + co-completion (parallel-partner) bridge shapes
     gaps.ts           skeleton-endpoint gap suggestions (fallback source)
     gpuGrow.ts        WebGPU chamfer-relaxation growth (optional, self-falling-back)

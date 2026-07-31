@@ -1,5 +1,6 @@
 import { distanceTransform } from './morphology.ts'
 import { sampleFlow, type Flow } from './flow.ts'
+import { relatable } from './relatability.ts'
 
 // Analyze region-collision fronts: boundary runs between two regions that lie
 // in OPEN space (far from any line) are leak artifacts, not drawn edges.
@@ -74,12 +75,33 @@ export function analyzeFronts(labels: Int32Array, line: Uint8Array, W: number, H
     }
     // suggest a bridge across the narrowest open point
     const seg = bridgeAt(p.tx, p.ty, line, W, H, flow, maxBridge, wd)
-    if (seg) cands.push([p.tmin, seg])
+    if (seg) {
+      const e = bridgeEnergy(seg, flow, p.tmin)
+      if (e < Infinity) cands.push([e, seg])
+    }
   }
   cands.sort((a, b) => a[0] - b[0])
   const segs: number[] = []
   for (const [, s] of cands.slice(0, 150)) segs.push(...s)
   return { merges, segs }
+}
+
+// Rank a throat bridge by elastica energy using stroke flow as the tip
+// tangents. When both anchors have coherent flow, also enforce relatability
+// (smooth, monotonic, bend <= 90deg); reject if it fails. Falls back to the
+// raw throat distance when flow is too incoherent to judge continuation.
+function bridgeEnergy(seg: number[], flow: Flow, fallback: number): number {
+  const [x1, y1, x2, y2] = seg
+  const L = Math.hypot(x2 - x1, y2 - y1) || 1
+  const ux = (x2 - x1) / L, uy = (y2 - y1) / L
+  const [f1x, f1y, c1] = sampleFlow(flow, x1, y1)
+  const [f2x, f2y, c2] = sampleFlow(flow, x2, y2)
+  if (c1 <= 0.25 || c2 <= 0.25) return fallback
+  // orient each axial flow vector to point out of its tip, into the gap
+  const s1 = f1x * ux + f1y * uy >= 0 ? 1 : -1
+  const s2 = f2x * ux + f2y * uy <= 0 ? 1 : -1
+  const rel = relatable(x1, y1, s1 * f1x, s1 * f1y, x2, y2, s2 * f2x, s2 * f2y)
+  return rel.ok ? rel.energy : Infinity
 }
 
 function localWidth(wd: Int32Array, i: number, W: number, H: number): number {

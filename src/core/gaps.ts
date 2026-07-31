@@ -1,4 +1,5 @@
 import { distanceTransform, skeletonize } from './morphology.ts'
+import { relatable } from './relatability.ts'
 
 // Gap-bridge suggestions: thin the line mask (Zhang-Suen), find stroke
 // endpoints, pair nearby endpoints (or endpoint -> nearby stroke) that aren't
@@ -32,7 +33,7 @@ export function suggestGaps(line: Uint8Array, W: number, H: number, maxGap: numb
 
   const segs: number[] = []
   const used = new Set<number>()
-  // endpoint <-> endpoint, nearest pairs first
+  // endpoint <-> endpoint, most-relatable (lowest elastica energy) pairs first
   const pairs: [number, number, number][] = []
   for (let a = 0; a < info.length; a++) {
     for (let b = a + 1; b < info.length; b++) {
@@ -43,11 +44,11 @@ export function suggestGaps(line: Uint8Array, W: number, H: number, maxGap: numb
       // similar stroke widths (don't join a contour break to thin hatching)
       const wa = wd[A.i], wb = wd[B.i]
       if (Math.max(wa, wb) > 2.5 * Math.min(wa, wb) + 3) continue
-      // near-collinear continuation at BOTH ends (±45°) — kills bridges that
-      // cut across open space between unrelated stroke tips
-      if (A.dx * (B.x - A.x) + A.dy * (B.y - A.y) < 0.7 * d) continue
-      if (B.dx * (A.x - B.x) + B.dy * (A.y - B.y) < 0.7 * d) continue
-      pairs.push([d, a, b])
+      // gestalt good continuation: relatable (smooth, monotonic, bend <= 90deg,
+      // no inflection). Tangents point out of each tip into the gap.
+      const rel = relatable(A.x, A.y, A.dx, A.dy, B.x, B.y, B.dx, B.dy)
+      if (!rel.ok) continue
+      pairs.push([rel.energy, a, b])
     }
   }
   pairs.sort((p, q) => p[0] - q[0])
