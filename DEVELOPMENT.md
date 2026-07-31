@@ -42,6 +42,7 @@ src/
     fronts.ts         region-collision analysis: auto-merge leaks + bridge suggestions
     flow.ts           stroke-orientation field (structure tensor at 1/4 res)
     relatability.ts   Kellman-Shipley relatability gate + Euler elastica energy/shape
+    completionField.ts stochastic completion field (Williams & Jacobs): u*v closure
     curves.ts         curved (Hermite) + co-completion (parallel-partner) bridge shapes
     gaps.ts           skeleton-endpoint gap suggestions (fallback source)
     gpuGrow.ts        WebGPU chamfer-relaxation growth (optional, self-falling-back)
@@ -87,6 +88,60 @@ is deliberately separable so parameter changes only re-run what they invalidate.
 
 `finalizeRegions` returns `RegionInfo[]`; `main.ts` builds `Region[]` with palette
 colours and layer state.
+
+## Gestalt gap closing
+
+Gap suggestion is grounded in vision science rather than ad-hoc thresholds. The
+mapping from gestalt principle to computation:
+
+| Principle | Model | Where |
+|---|---|---|
+| Good continuation | Kellman-Shipley **relatability**: smooth, monotonic, bend ≤90°, no inflection | [relatability.ts](src/core/relatability.ts) |
+| — shape/ranking | Euler **elastica** `∫(1+βκ²)ds` | [relatability.ts](src/core/relatability.ts), [curves.ts](src/core/curves.ts) |
+| Proximity | random-walk decay per step | [completionField.ts](src/core/completionField.ts) |
+| Closure | **product** of forward × backward fields (`C = u·v`) | [completionField.ts](src/core/completionField.ts) |
+| Similarity | stroke-width matching at anchors | [fronts.ts](src/core/fronts.ts), [gaps.ts](src/core/gaps.ts) |
+| Parallelism | co-completion from a partner stroke; field superposition | [curves.ts](src/core/curves.ts) |
+
+**Relatability** is the gate: it replaced a pair of one-sided collinearity
+dot-checks that admitted S-curves (inflected links human vision never
+completes). Elastica energy then ranks survivors — straighter beats bendier at
+equal distance — and shapes the drawn bridge.
+
+**The completion field** ([completionField.ts](src/core/completionField.ts)) is the
+principled engine. A directed random walk on `(x, y, θ)`: particles advect along
+their heading (continuation), diffuse in θ (gradual turning), and decay
+(proximity). A forward field `u` is emitted from tips-as-sources and a backward
+field `v` from tips-as-sinks; **`C = Σ_θ u·v` is closure for free** — a ray into
+the void has high `u` but ~zero `v`, so it scores nothing. Solved by iterative
+relaxation (same shape as [gpuGrow.ts](src/core/gpuGrow.ts)).
+
+Three non-obvious implementation constraints, each of which broke it once:
+
+1. **Half res, not quarter.** Gaps are 8-20px. At ¼ res an 8px gap is 2 cells and
+   the ink dilation from downsampling seals it completely — the field reads zero
+   everywhere and no bridge is ever proposed.
+2. **Sparse storage.** A dense `K×W×H` volume at half res is ~90MB *per field*
+   (×4 fields). Only a band around stroke tips is relaxed, stored via a compact
+   `idx` map (half-res cell → compact index, or −1).
+3. **Skip ink when scoring, don't zero it.** Tips come from the *skeleton*, so a
+   thick stroke buries the ends of every candidate path in ink cells where the
+   field cannot exist. Scoring those as 0 rejects every real bridge. `sampleC`
+   returns −1 for "no field cell" (distinct from a genuine 0) and `pathSupport`
+   skips them. Support is the **minimum** over the free interior, not the mean:
+   closure demands an unbroken contour, and a wall mid-gap must not be averaged
+   away.
+
+Support is sharply bimodal on real art (~2.0 for genuine completions vs ~1e-4 for
+noise), so the threshold is not delicate. The field is high-precision /
+low-recall — it proposes far fewer bridges than the heuristic pairing, but they
+land squarely in real stroke breaks. It is therefore an **opt-in toggle**
+("Completion field") on Suggest Gaps, not the default; region-collision fronts
+remain the primary suggestion source.
+
+*Not done:* a WGSL kernel for the field. The sparse active-cell layout does not
+map cleanly onto a dense GPU grid, and ~1.1s at 5.6MP is acceptable for an
+explicit action. Revisit only if the field becomes a live/auto stage.
 
 ## Data model ([state.ts](src/state.ts))
 
@@ -183,9 +238,6 @@ These are largely independent; 1+2+3 is the recommended set.
 
 Ordered by value-for-effort (from the gap-handling brainstorm):
 
-- **Stochastic completion fields** (Williams & Jacobs) — diffuse oriented particles
-  from stroke ends, bridge where forward×backward completion probability peaks. A
-  principled superset of the current proximity + continuation + closure heuristics.
 - **Figure/ground shape priors** — score region solidity/tortuosity to rank
   auto-merges and to surface *uncertain* regions as user attention targets.
 - **Learned closure** — a small U-Net predicting per-pixel gap probability, trained

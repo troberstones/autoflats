@@ -511,7 +511,8 @@ function suggestGapsNow() {
   }
   const labels = doc.labels ? doc.labels.slice() : null
   const ink = doc.ink!.slice()
-  worker.postMessage({ t: 'gaps', line: line.buffer, ink: ink.buffer, W: doc.W, H: doc.H, maxGap: params().gap, labels: labels?.buffer ?? null, token: tk },
+  const method = ($<HTMLInputElement>('cField')).checked ? 'field' : 'heuristic'
+  worker.postMessage({ t: 'gaps', line: line.buffer, ink: ink.buffer, W: doc.W, H: doc.H, maxGap: params().gap, labels: labels?.buffer ?? null, method, token: tk },
     labels ? [line.buffer, ink.buffer, labels.buffer] : [line.buffer, ink.buffer])
 }
 

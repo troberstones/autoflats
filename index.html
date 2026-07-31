@@ -66,6 +66,7 @@
     <label class="s">Min region <input type="range" id="sMin" min="0" max="500" value="150"><span id="vMin">150px²</span></label>
     <label class="s" title="Merge fills thinner than this everywhere — the space between parallel/double strokes. 0 = off">Sliver width <input type="range" id="sSliv" min="0" max="8" value="3"><span id="vSliv">3px</span></label>
     <label class="s" title="Merge fill fragments whose shared border crosses open space against the stroke flow"><input type="checkbox" id="cMerge" checked> Auto-merge leaks</label>
+    <label class="s" title="Rank gap bridges by a stochastic completion field (Williams &amp; Jacobs): tips link only where the field diffuses a smooth connecting contour between them. Used by Suggest Gaps."><input type="checkbox" id="cField"> Completion field</label>
     <label class="s" title="Re-flat automatically after tuning a parameter"><input type="checkbox" id="cAuto"> Auto re-flat</label>
     <label class="s" id="lGpu" title="Run the growth stages on the GPU (WebGPU); falls back to CPU automatically" hidden><input type="checkbox" id="cGpu" checked> GPU</label>
     <label class="s">Line opacity <input type="range" id="sOp" min="0" max="100" value="100"></label>

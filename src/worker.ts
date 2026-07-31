@@ -2,7 +2,8 @@ import { trappedBall, labelPockets } from './core/trappedBall.ts'
 import { GpuGrower } from './core/gpuGrow.ts'
 import { expandLabels } from './core/expand.ts'
 import { finalizeRegions, type RegionInfo } from './core/regions.ts'
-import { suggestGaps } from './core/gaps.ts'
+import { suggestGaps, strokeEndpoints } from './core/gaps.ts'
+import { completionField, fieldBridges } from './core/completionField.ts'
 import { distanceTransform } from './core/morphology.ts'
 import { flowField } from './core/flow.ts'
 import { analyzeFronts } from './core/fronts.ts'
@@ -129,8 +130,10 @@ onmessage = async (e: MessageEvent) => {
     let flow: Flow | null = null
     if (m.ink) flow = flowField(new Uint8Array(m.ink), m.W, m.H)
     if (labels && flow) segs = analyzeFronts(labels, line, m.W, m.H, flow, maxBridge, null, false).segs
-    // skeleton-endpoint fallback catches shapes that leaked fully into bg
-    const eps = suggestGaps(line, m.W, m.H, m.maxGap, labels)
+    // endpoint bridges: completion-field salience (flagship) or heuristic pairing
+    const eps = m.method === 'field'
+      ? fieldSuggest(line, m.W, m.H, m.maxGap, maxBridge)
+      : suggestGaps(line, m.W, m.H, m.maxGap, labels)
     for (let i = 0; i < eps.length; i += 4) {
       const mx = (eps[i] + eps[i + 2]) / 2, my = (eps[i + 1] + eps[i + 3]) / 2
       let dup = false
@@ -141,6 +144,18 @@ onmessage = async (e: MessageEvent) => {
     }
     postMessage({ t: 'gaps', paths: toPaths(segs.slice(0, 200 * 4), flow, line, m.W, m.H), token: m.token })
   }
+}
+
+// Endpoint bridges ranked by stochastic-completion-field salience: tips are
+// linked only where the field diffuses a connecting contour between them.
+function fieldSuggest(line: Uint8Array, W: number, H: number, maxGap: number, maxBridge: number): number[] {
+  const eps = strokeEndpoints(line, W, H, maxGap)
+  if (!eps.length) return []
+  const f = completionField(line, W, H, eps, maxBridge)
+  const inv = new Uint8Array(W * H)
+  for (let i = 0; i < inv.length; i++) inv[i] = line[i] ? 0 : 1
+  const wd = distanceTransform(inv, W, H)
+  return fieldBridges(f, eps, maxBridge, (x, y) => wd[y * W + x])
 }
 
 function bgLut(regions: RegionInfo[]): Uint8Array {

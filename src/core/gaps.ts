@@ -6,21 +6,23 @@ import { relatable } from './relatability.ts'
 // already connected along the skeleton. If labels are given, only bridges
 // where the SAME fill region flows through the gap are kept — i.e. gaps that
 // actually caused (or would cause) a leak. Returns [x1,y1,x2,y2, ...].
-export function suggestGaps(line: Uint8Array, W: number, H: number, maxGap: number, labels?: Int32Array | null): number[] {
-  // stroke half-width at skeleton pixels (similarity cue for pairing)
+interface Ep { i: number; x: number; y: number; branch: Set<number>; dx: number; dy: number }
+
+// Skeleton stroke tips with outward unit tangents (dx,dy point out of the tip,
+// into the gap). Shared by suggestGaps and the completion field. `wd` is the
+// stroke half-width transform (similarity cue); `sk` the 1px skeleton.
+function extractEndpoints(line: Uint8Array, W: number, H: number, maxBridge: number): { info: Ep[]; wd: Int32Array; sk: Uint8Array } {
   const inv = new Uint8Array(W * H)
   for (let i = 0; i < inv.length; i++) inv[i] = line[i] ? 0 : 1
   const wd = distanceTransform(inv, W, H)
   const sk = skeletonize(line, W, H)
 
-  const maxBridge = Math.max(6, maxGap * 2 + 4)
   const eps: number[] = []
   for (let i = 0; i < sk.length; i++) {
     if (sk[i] && skNbrCount(sk, i, W) <= 1 && !isSpur(sk, i, W)) eps.push(i)
   }
   if (eps.length > 4000) eps.length = 4000
 
-  interface Ep { i: number; x: number; y: number; branch: Set<number>; dx: number; dy: number }
   const info: Ep[] = eps.map(i => {
     const branch = walkBranch(sk, i, W, maxBridge * 2)
     const arr = [...branch]
@@ -30,6 +32,18 @@ export function suggestGaps(line: Uint8Array, W: number, H: number, maxGap: numb
     const n = Math.hypot(dx, dy) || 1
     return { i, x, y, branch, dx: dx / n, dy: dy / n }
   })
+  return { info, wd, sk }
+}
+
+export interface Endpoint { x: number; y: number; tx: number; ty: number }
+export function strokeEndpoints(line: Uint8Array, W: number, H: number, maxGap: number): Endpoint[] {
+  const maxBridge = Math.max(6, maxGap * 2 + 4)
+  return extractEndpoints(line, W, H, maxBridge).info.map(e => ({ x: e.x, y: e.y, tx: e.dx, ty: e.dy }))
+}
+
+export function suggestGaps(line: Uint8Array, W: number, H: number, maxGap: number, labels?: Int32Array | null): number[] {
+  const maxBridge = Math.max(6, maxGap * 2 + 4)
+  const { info, wd, sk } = extractEndpoints(line, W, H, maxBridge)
 
   const segs: number[] = []
   const used = new Set<number>()
