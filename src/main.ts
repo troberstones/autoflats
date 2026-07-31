@@ -2,7 +2,7 @@ import { Doc, Region, Stroke, UndoOp, paletteColor, rgbToHex, hexToRgb, hslToRgb
 import { CanvasView, Tool } from './ui/canvasView.ts'
 import { extractInk, thresholdInk } from './core/ink.ts'
 import { smoothMask, skeletonize } from './core/morphology.ts'
-import { exportPsd, ExportRegion } from './core/psd.ts'
+import { exportPsd, ExportRegion, type ExportMode } from './core/psd.ts'
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T
 
@@ -64,7 +64,7 @@ const pickColor = (): [number, number, number] =>
   ($<HTMLInputElement>('cRand')).checked
     ? hslToRgb(Math.random() * 360, 0.45 + Math.random() * 0.3, 0.6 + Math.random() * 0.2)
     : hexToRgb(($('curColor') as HTMLInputElement).value)
-const params = () => ({ thr: sl('sThr') / 100, sat: sl('sSat') / 100, gap: sl('sGap'), min: sl('sMin'), smooth: sl('sSm'), sliver: sl('sSliv') })
+const params = () => ({ thr: sl('sThr') / 100, sat: sl('sSat') / 100, gap: sl('sGap'), min: sl('sMin'), smooth: sl('sSm'), sliver: sl('sSliv'), decl: sl('sDecl') })
 
 function currentLineMask(includeBarriers = true): Uint8Array {
   let line = smoothMask(thresholdInk(doc.ink!, params().thr), doc.W, doc.H, params().smooth)
@@ -136,30 +136,78 @@ function rasterizeBarriers() {
 }
 
 // ---------- layers panel ----------
+const expanded = new Set<string>() // colour groups opened in the panel
+
+function regionRow(r: Region, kid: boolean): HTMLDivElement {
+  const row = document.createElement('div')
+  row.className = 'row' + (kid ? ' kid' : '') + (r.id === selected ? ' sel' : '')
+  const vis = document.createElement('input')
+  vis.type = 'checkbox'
+  vis.checked = r.visible
+  vis.onchange = () => { r.visible = vis.checked; rebuildFills() }
+  const sw = document.createElement('input')
+  sw.type = 'color'
+  sw.value = rgbToHex(r.color)
+  sw.oninput = () => { r.color = hexToRgb(sw.value); rebuildFills() }
+  const nm = document.createElement('span')
+  nm.className = 'nm'
+  nm.textContent = r.name + (r.isBg ? ' (bg)' : '')
+  nm.ondblclick = () => { const v = prompt('Layer name', r.name); if (v) { r.name = v; rebuildPanel() } }
+  const ar = document.createElement('span')
+  ar.className = 'ar'
+  ar.textContent = fmtArea(r.area)
+  row.onclick = e => { if (e.target === vis || e.target === sw) return; selected = r.id; rebuildPanel() }
+  row.append(vis, sw, nm, ar)
+  return row
+}
+
+// One row per fill, or -- once fills share colours (Colors slider) -- one
+// collapsible row per colour with bulk show/hide and recolour, so the panel
+// stays short no matter how many regions there are.
 function rebuildPanel() {
   const panel = $('layers')
   panel.innerHTML = ''
-  for (const r of doc.roots()) {
+  const roots = doc.roots()
+  const groups = new Map<string, Region[]>()
+  for (const r of roots) {
+    const k = rgbToHex(r.color)
+    const g = groups.get(k)
+    if (g) g.push(r); else groups.set(k, [r])
+  }
+  if (groups.size >= roots.length) { // every fill a unique colour: flat list
+    for (const r of roots) panel.append(regionRow(r, false))
+    return
+  }
+  for (const [hex, rs] of groups) {
+    const open = expanded.has(hex)
     const row = document.createElement('div')
-    row.className = 'row' + (r.id === selected ? ' sel' : '')
+    row.className = 'row grp'
+    const tw = document.createElement('span')
+    tw.className = 'tw'
+    tw.textContent = open ? '▼' : '▶'
     const vis = document.createElement('input')
     vis.type = 'checkbox'
-    vis.checked = r.visible
-    vis.onchange = () => { r.visible = vis.checked; rebuildFills() }
+    vis.checked = rs.some(r => r.visible)
+    vis.onchange = () => { for (const r of rs) r.visible = vis.checked; rebuildFills(); rebuildPanel() }
     const sw = document.createElement('input')
     sw.type = 'color'
-    sw.value = rgbToHex(r.color)
-    sw.oninput = () => { r.color = hexToRgb(sw.value); rebuildFills() }
+    sw.value = hex
+    sw.oninput = () => { const c = hexToRgb(sw.value); for (const r of rs) r.color = c; rebuildFills() }
+    sw.onchange = () => rebuildPanel() // regroup once the picker closes
     const nm = document.createElement('span')
     nm.className = 'nm'
-    nm.textContent = r.name + (r.isBg ? ' (bg)' : '')
-    nm.ondblclick = () => { const v = prompt('Layer name', r.name); if (v) { r.name = v; rebuildPanel() } }
+    nm.textContent = `${rs.length} fill${rs.length > 1 ? 's' : ''}`
     const ar = document.createElement('span')
     ar.className = 'ar'
-    ar.textContent = fmtArea(r.area)
-    row.onclick = e => { if (e.target === vis || e.target === sw) return; selected = r.id; rebuildPanel() }
-    row.append(vis, sw, nm, ar)
+    ar.textContent = fmtArea(rs.reduce((s, r) => s + r.area, 0))
+    row.onclick = e => {
+      if (e.target === vis || e.target === sw) return
+      open ? expanded.delete(hex) : expanded.add(hex)
+      rebuildPanel()
+    }
+    row.append(tw, vis, sw, nm, ar)
     panel.append(row)
+    if (open) for (const r of rs) panel.append(regionRow(r, true))
   }
 }
 const fmtArea = (a: number) => a > 1e6 ? (a / 1e6).toFixed(1) + 'M' : a > 1000 ? (a / 1000 | 0) + 'k' : '' + a
@@ -187,7 +235,10 @@ function runFlat(matchOld: boolean) {
         regs[ri.id] = { id: ri.id, color: paletteColor(ri.id), name: 'Fill ' + ri.id, visible: !ri.isBg, parent: ri.id, area: ri.area, isBg: ri.isBg }
       }
       doc.regions = regs
+      // re-flat carries colours over from the old regions (preserving both the
+      // palette and any manual recolouring); a fresh flat assigns the palette
       if (oldLabels && oldRegions && oldLut) matchColors(oldLabels, oldRegions, oldLut)
+      else applyPalette(sl('sPal'))
       if (prev.core) pushUndo({ label: 'flat', heavy: true, undo: () => { doc.core = prev.core; doc.labels = prev.labels; doc.regions = prev.regions; afterModelChange() } })
       setDirty(false)
       view.paths = m.paths ?? []
@@ -212,6 +263,7 @@ function runFlat(matchOld: boolean) {
   worker.postMessage({
     t: 'flat', line: line.buffer, ink: ink.buffer, W: doc.W, H: doc.H,
     maxGap: p.gap, minArea: p.min, sliverW: p.sliver, autoMerge: ($<HTMLInputElement>('cMerge')).checked,
+    declutter: p.decl,
     segKey: `${doc.W}|${p.thr}|${p.smooth}|${p.gap}|${p.sat}|${strokesVersion}|${($<HTMLInputElement>('cSkel')).checked}`,
     flowKey: `${doc.W}|${p.sat}`,
     useGpu: ($<HTMLInputElement>('cGpu')).checked,
@@ -240,6 +292,61 @@ function matchColors(oldLabels: Int32Array, oldRegions: Region[], oldLut: Int32A
     if (!nr || !or) continue
     usedNew.add(n); usedOld.add(o)
     nr.color = or.color; nr.name = or.name; nr.visible = or.visible
+  }
+}
+
+// ---------- palette quantization ----------
+// Adjacency of merged (root) regions, from the label map. Only boundary pixels
+// contribute, so this is much cheaper than it looks.
+function regionAdjacency(): Map<number, Set<number>> {
+  const adj = new Map<number, Set<number>>()
+  const lut = doc.rootLut(), lb = doc.labels!, { W, H } = doc
+  const add = (a: number, b: number) => {
+    let s = adj.get(a)
+    if (!s) adj.set(a, s = new Set())
+    s.add(b)
+  }
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      const i = y * W + x, a = lut[lb[i]]
+      if (!a) continue
+      if (x < W - 1) { const b = lut[lb[i + 1]]; if (b && b !== a) { add(a, b); add(b, a) } }
+      if (y < H - 1) { const b = lut[lb[i + W]]; if (b && b !== a) { add(a, b); add(b, a) } }
+    }
+  }
+  return adj
+}
+
+// Recolor every fill from a K-colour palette by greedy graph colouring, so no
+// two touching fills ever share a colour. Without that constraint quantization
+// would visually merge neighbours and collapse them into one export layer.
+// Largest regions are coloured first (they have the most neighbours to satisfy).
+// K = 0 restores a unique colour per fill.
+function applyPalette(K: number) {
+  if (!doc.labels) return
+  const roots = doc.roots()
+  if (!K) {
+    for (const r of roots) r.color = paletteColor(r.id)
+    return
+  }
+  const adj = regionAdjacency()
+  const idx = new Map<number, number>()
+  for (const r of roots) {
+    const nbrs = adj.get(r.id)
+    const used = new Set<number>()
+    if (nbrs) for (const n of nbrs) { const c = idx.get(n); if (c !== undefined) used.add(c) }
+    let pick = -1
+    for (let c = 0; c < K; c++) if (!used.has(c)) { pick = c; break }
+    if (pick < 0) {
+      // every palette entry clashes (K too small here): take the one used by
+      // the fewest neighbours so the collision is least visible
+      const count = new Int32Array(K)
+      if (nbrs) for (const n of nbrs) { const c = idx.get(n); if (c !== undefined) count[c]++ }
+      pick = 0
+      for (let c = 1; c < K; c++) if (count[c] < count[pick]) pick = c
+    }
+    idx.set(r.id, pick)
+    r.color = paletteColor(pick)
   }
 }
 
@@ -408,6 +515,7 @@ function runPreviewFlat() {
     t: 'flat', line: line4.buffer, ink: ink4.buffer, W: W4, H: H4,
     maxGap: Math.max(1, Math.round(p.gap / 4)), minArea: Math.max(4, Math.round(p.min / 16)),
     sliverW: Math.round(p.sliver / 4), autoMerge: ($<HTMLInputElement>('cMerge')).checked,
+    declutter: p.decl,
     segKey: `pv|${W4}|${p.thr}|${p.smooth}|${p.gap}|${p.sat}|${strokesVersion}|${($<HTMLInputElement>('cSkel')).checked}`,
     flowKey: `pv|${W4}|${p.sat}`,
     token: tk,
@@ -601,7 +709,8 @@ async function doExport() {
   status('Exporting…', true)
   await new Promise(r => setTimeout(r))
   const regions: ExportRegion[] = doc.roots().map(r => ({ id: r.id, color: r.color, name: r.name, hidden: !r.visible }))
-  const blob = new Blob([exportPsd(doc.W, doc.H, doc.labels, doc.rootLut(), regions, doc.ink!)], { type: 'image/vnd.adobe.photoshop' })
+  const mode = ($('expMode') as HTMLSelectElement).value as ExportMode
+  const blob = new Blob([exportPsd(doc.W, doc.H, doc.labels, doc.rootLut(), regions, doc.ink!, mode)], { type: 'image/vnd.adobe.photoshop' })
   const name = doc.name + '.psd'
   const w = window as any
   if (w.showSaveFilePicker) {
@@ -692,6 +801,8 @@ const sliderLive = () => {
   $('vMin').textContent = sl('sMin') + 'px²'
   $('vSm').textContent = sl('sSm') + 'px'
   $('vSliv').textContent = sl('sSliv') + 'px'
+  $('vPal').textContent = sl('sPal') ? '' + sl('sPal') : 'unique'
+  $('vDecl').textContent = sl('sDecl') ? '' + sl('sDecl') : 'off'
 }
 let pvTimer = 0
 let lastSat = -1
@@ -707,7 +818,16 @@ const schedulePreview = () => {
   }, 150)
 }
 for (const id of ['sThr', 'sSat', 'sSm']) $(id).oninput = () => { resetAutoBridge(); sliderLive(); setDirty(true); schedulePreview(); scheduleQuickFlat() }
-for (const id of ['sGap', 'sMin', 'sSliv']) $(id).oninput = () => { resetAutoBridge(); sliderLive(); setDirty(true); scheduleQuickFlat() }
+for (const id of ['sGap', 'sMin', 'sSliv', 'sDecl']) $(id).oninput = () => { resetAutoBridge(); sliderLive(); setDirty(true); scheduleQuickFlat() }
+// palette is a pure recolour: no re-segmentation, so apply it immediately
+$('sPal').oninput = () => {
+  sliderLive()
+  if (!doc.labels) return
+  expanded.clear()
+  applyPalette(sl('sPal'))
+  rebuildFills()
+  rebuildPanel()
+}
 $('cMerge').onchange = () => { setDirty(true); scheduleQuickFlat() }
 $('cSkel').onchange = () => { if (doc.src) rebuildLineCanvas(); setDirty(true); scheduleQuickFlat() }
 $('cAuto').onchange = () => { if (dirty) scheduleAutoFlat(0) }

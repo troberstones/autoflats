@@ -9,6 +9,7 @@ import { distanceTransform } from './core/morphology.ts'
 import { flowField } from './core/flow.ts'
 import { analyzeFronts } from './core/fronts.ts'
 import { mergeSlivers } from './core/slivers.ts'
+import { declutter, declutterOpts } from './core/declutter.ts'
 import { curveBridge, coCompleteBridge } from './core/curves.ts'
 import type { Flow } from './core/flow.ts'
 
@@ -75,6 +76,10 @@ onmessage = async (e: MessageEvent) => {
     }
     let { regions } = finalizeRegions(core, labels, m.W, m.H, m.minArea)
     if (mergeSlivers(core, labels, line, m.W, m.H, m.sliverW ?? 0)) {
+      ;({ regions } = finalizeRegions(core, labels, m.W, m.H, m.minArea))
+    }
+    // absorb hatching/texture fragments into the areas they shade
+    if (declutter(core, labels, line, m.W, m.H, declutterOpts(m.declutter ?? 0), bgLut(regions))) {
       ;({ regions } = finalizeRegions(core, labels, m.W, m.H, m.minArea))
     }
     if (!flowCache || flowCache.key !== m.flowKey) flowCache = { key: m.flowKey, flow: flowField(ink, m.W, m.H) }

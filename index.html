@@ -28,6 +28,10 @@
   .row .nm { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .row .ar { color: #888; font-size: 11px; }
   .row input[type=color] { width: 22px; height: 22px; padding: 0; border: none; background: none; }
+  .row.grp { background: #333; margin-top: 2px; }
+  .row.grp:hover { background: #3d3d3d; }
+  .row.kid { padding-left: 18px; }
+  .tw { width: 10px; color: #999; font-size: 9px; user-select: none; }
   #status { margin-left: auto; color: #999; }
   #badge { color: #ffa030; display: none; }
   .spin { color: #6cf; }
@@ -43,6 +47,11 @@
     <button id="bCluster" disabled title="Merge small fills into the neighbor they share an un-inked border with">Cluster Small</button>
     <span id="badge">● changes need Re-Flat</span>
     <button id="bExport" disabled>Export PSD</button>
+    <select id="expMode" title="How fills become PSD layers">
+      <option value="color">one layer per color</option>
+      <option value="region" selected>one layer per fill</option>
+      <option value="flat">single flat layer</option>
+    </select>
     <label class="s">Fill color <input type="color" id="curColor" value="#c8e0f0"></label>
     <label class="s" title="Bucket picks a random color per fill"><input type="checkbox" id="cRand"> Random</label>
     <span id="status">Open a line-art image to begin</span>
@@ -64,7 +73,9 @@
     <label class="s" title="Erode lines to a 1px skeleton before filling, so gap size &amp; matching ignore stroke thickness"><input type="checkbox" id="cSkel"> Skeletonize</label>
     <label class="s">Gap size <input type="range" id="sGap" min="1" max="32" value="8"><span id="vGap">8px</span></label>
     <label class="s">Min region <input type="range" id="sMin" min="0" max="500" value="150"><span id="vMin">150px²</span></label>
+    <label class="s" title="Assign fills from a palette of this many colors, so neighbouring fills never share one. Groups the layers panel and enables one-layer-per-color export. 0 = a unique color per fill.">Colors <input type="range" id="sPal" min="0" max="32" value="0"><span id="vPal">unique</span></label>
     <label class="s" title="Merge fills thinner than this everywhere — the space between parallel/double strokes. 0 = off">Sliver width <input type="range" id="sSliv" min="0" max="8" value="3"><span id="vSliv">3px</span></label>
+    <label class="s" title="Absorb small fills squeezed between strokes in busy line work (hatching, texture, folds) into the area they shade. Higher = more aggressive. 0 = off">Declutter <input type="range" id="sDecl" min="0" max="100" value="50"><span id="vDecl">50</span></label>
     <label class="s" title="Merge fill fragments whose shared border crosses open space against the stroke flow"><input type="checkbox" id="cMerge" checked> Auto-merge leaks</label>
     <label class="s" title="Rank gap bridges by a stochastic completion field (Williams &amp; Jacobs): tips link only where the field diffuses a smooth connecting contour between them. Used by Suggest Gaps."><input type="checkbox" id="cField"> Completion field</label>
     <label class="s" title="Re-flat automatically after tuning a parameter"><input type="checkbox" id="cAuto"> Auto re-flat</label>

@@ -39,6 +39,7 @@ src/
     expand.ts         growLabels(): bucketed-Dijkstra multi-source growth (soft watershed)
     regions.ts        tiny-region absorption, id compaction, background detection
     slivers.ts        merge corridor slivers (space between parallel strokes)
+    declutter.ts      absorb hatching/texture fragments into the area they shade
     fronts.ts         region-collision analysis: auto-merge leaks + bridge suggestions
     flow.ts           stroke-orientation field (structure tensor at 1/4 res)
     relatability.ts   Kellman-Shipley relatability gate + Euler elastica energy/shape
@@ -76,6 +77,9 @@ is deliberately separable so parameter changes only re-run what they invalidate.
    background (touches canvas border).
 6. **Sliver merge** ([slivers.ts](src/core/slivers.ts)) — regions thin everywhere
    (trapped between parallel strokes) merge into the area they open into.
+6b. **Declutter** ([declutter.ts](src/core/declutter.ts)) — figure/ground cleanup for
+   busy line work; see below. Absorbs hatching fragments into the surface they
+   shade. Biggest single lever on region count.
 7. **Flow field** ([flow.ts](src/core/flow.ts)) — structure tensor of the ink at
    1/4 res → per-pixel stroke tangent + coherence. Cached by ink.
 8. **Front analysis** ([fronts.ts](src/core/fronts.ts)) — for each adjacent region
@@ -212,8 +216,10 @@ Accept All. Cluster Small merges small open-bordered fills.
 - **Skeletonize** retracts open stroke *tips* inward ~half the stroke width, so a
   given visual gap reads larger in skeleton space → may leak; nudge Gap size up. Off
   by default.
-- **Too many layers** — the current 1-region-1-layer model yields 200–470 regions
-  per sample. This is the top open problem (see below).
+- **Layer count** — addressed by declutter + palette + export modes (see below).
+  Note **gap closing and layer reduction pull in opposite directions**: bridging a
+  leak correctly splits one region into two, so Auto-bridge slightly raises the
+  count while declutter lowers it a lot.
 - Browser-preview MCP and the Chrome bridge were both unavailable in the build
   environment, so all validation was **headless** (see Testing). Do a real
   in-browser pass when possible, especially for the GPU path and PSD-in-Photoshop.
@@ -237,26 +243,63 @@ core modules against the sample images:
   fills reach stroke centres (render with line layer off — adjacent fills should
   abut with no seam).
 
-## Top open problem: too many layers
+## Too many layers (solved, four ways)
 
-1 region = 1 layer produces far too many layers for a usable PSD (a character has
-~20–40 real colour areas, we emit hundreds). **Recommended package, in priority
-order (design already scoped, not yet implemented):**
+1 region = 1 layer used to emit 200–470 layers for a character with ~20–40 real
+colour areas. Four independent mechanisms now attack this; they compose.
 
-1. **Per-colour export mode** — group regions sharing a fill colour into one layer.
-   Add export modes: Per colour (default) / Single flat layer / Per region (current).
-   Biggest single win; matches real flatting deliverables. Touches [psd.ts](src/core/psd.ts)
-   (`rootOf` LUT → group by colour instead of by root) and the export menu.
-2. **Palette quantization** — a Colors slider (K≈8–32) assigning from a fixed
-   K-colour palette so regions pre-collapse into K groups before any manual work.
-   Touches palette assignment in `runFlat`/[state.ts](src/state.ts).
-3. **Colour-grouped layers panel** — one collapsible row per colour with a count +
-   bulk recolor/hide/merge, so the panel is short regardless of region count. Touches
-   `rebuildPanel` in [main.ts](src/main.ts).
-4. **PSD layer folders** — if per-region is kept, nest by colour in group folders
-   (ag-psd supports group layers) so Photoshop shows a few folders not hundreds.
+### 1. Declutter — fix the cause, not the symptom ([declutter.ts](src/core/declutter.ts))
 
-These are largely independent; 1+2+3 is the recommended set.
+Most excess regions are not real areas at all. Where line work gets busy
+(hatching, folds, texture) the strokes do not *enclose* anything — they shade a
+surface that reads as one area — but trapped-ball dutifully seeds every pocket
+between neighbouring strokes. Measured over the samples, three signals separate
+these from genuine drawn cells:
+
+| | share of fills | mean dist. to stroke | local ink density |
+|---|---|---|---|
+| clutter (<800px²) | **~76%** | ~3.1px (squeezed) | ~0.20 |
+| real areas | ~24% | ~7.8px (room) | ~0.10 |
+
+They are ~76% of the fills but under 10% of the picture. A region small **and**
+squeezed **and** in an inky neighbourhood is absorbed into the area it shades.
+Touching clutter regions merge with each other first, so a hatched patch
+collapses as a unit and then attaches to its host. The Declutter slider (0–100,
+default 50) scales all three thresholds.
+
+Effect at full strength: 615→205, 394→99, 528→240 fills. Max non-bg fill moves
+only 4.3%→4.6% and background is unchanged — i.e. it removes fragments without
+ballooning or leaking anything. Costs ~200–650ms.
+
+### 2. Palette quantization — with a graph-colouring constraint ([main.ts](src/main.ts) `applyPalette`)
+
+The Colors slider (K) assigns fills from a K-colour palette. The non-obvious
+requirement: **adjacent regions must never share a colour**, or quantization
+visually merges neighbours and collapses unrelated areas into one export layer.
+So it is a greedy graph colouring over the region adjacency graph, largest
+regions first. Region adjacency is planar, so K is generous in practice — 57
+regions needed only 5 colours, with zero adjacent-colour violations. K = 0
+restores a unique colour per fill.
+
+### 3. Export modes + PSD folders ([psd.ts](src/core/psd.ts))
+
+`ExportMode` = `'color' | 'region' | 'flat'`:
+- **color** — one layer per distinct fill colour. The usual flatting deliverable.
+- **region** — one layer per fill, but nested in a **group folder per colour**
+  (ag-psd group layers) whenever colours are shared, so Photoshop shows a few
+  folders instead of hundreds of loose layers.
+- **flat** — everything on one layer.
+
+In the merged modes a hidden fill could not be toggled back on, so hidden fills
+are omitted entirely; per-region keeps them as hidden layers. Verified by
+round-trip: 57 fills → 7 top-level entries (5 colour folders / 5 colour layers).
+
+### 4. Colour-grouped panel ([main.ts](src/main.ts) `rebuildPanel`)
+
+Once colours are shared, the panel shows one collapsible row per colour with a
+count, total area, and bulk show/hide + recolour; expanding reveals the
+individual fills. Falls back to the flat list when every fill has a unique
+colour, so nothing changes with the palette off.
 
 ## Ideas discussed but not built
 
