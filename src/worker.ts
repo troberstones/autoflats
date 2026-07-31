@@ -10,6 +10,7 @@ import { flowField } from './core/flow.ts'
 import { analyzeFronts } from './core/fronts.ts'
 import { mergeSlivers } from './core/slivers.ts'
 import { declutter, declutterOpts } from './core/declutter.ts'
+import { sagSegment } from './core/sag.ts'
 import { curveBridge, coCompleteBridge } from './core/curves.ts'
 import type { Flow } from './core/flow.ts'
 
@@ -42,7 +43,14 @@ let flowCache: { key: string; flow: ReturnType<typeof flowField> } | null = null
 
 // GPU growth: lazy init; any failure permanently falls back to CPU
 let gpu: GpuGrower | null | undefined // undefined = not tried yet
-async function segment(line: Uint8Array, ink: Uint8Array, W: number, H: number, maxGap: number, useGpu: boolean) {
+async function segment(line: Uint8Array, ink: Uint8Array, W: number, H: number, maxGap: number, useGpu: boolean,
+                       sagTau: number) {
+  // Rubber sheet: one membrane solve replaces the whole radius ladder, and the
+  // regions come out of the field's topology rather than out of flood order.
+  if (sagTau > 0) {
+    const { core } = sagSegment(line, W, H, sagTau, maxGap)
+    return { core, labels: expandLabels(core, W, H, ink) }
+  }
   if (useGpu && gpu === undefined) gpu = await GpuGrower.create()
   if (useGpu && gpu) {
     try {
@@ -70,7 +78,8 @@ onmessage = async (e: MessageEvent) => {
       core = hit.core.slice()
       labels = hit.labels.slice()
     } else {
-      ;({ core, labels } = await segment(line, ink, m.W, m.H, m.maxGap, !!m.useGpu && m.W * m.H > 2e6))
+      ;({ core, labels } = await segment(line, ink, m.W, m.H, m.maxGap,
+        !!m.useGpu && m.W * m.H > 2e6, m.sagTau ?? 0))
       segCache.set(m.segKey, { core: core.slice(), labels: labels.slice() })
       for (const k of segCache.keys()) { if (segCache.size <= 2) break; segCache.delete(k) }
     }

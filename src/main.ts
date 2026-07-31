@@ -73,7 +73,7 @@ const pickColor = (): [number, number, number] =>
   ($<HTMLInputElement>('cRand')).checked
     ? hslToRgb(Math.random() * 360, 0.45 + Math.random() * 0.3, 0.6 + Math.random() * 0.2)
     : hexToRgb(($('curColor') as HTMLInputElement).value)
-const params = () => ({ thr: sl('sThr') / 100, sat: sl('sSat') / 100, gap: sl('sGap'), min: sl('sMin'), smooth: sl('sSm'), sliver: sl('sSliv'), decl: sl('sDecl') })
+const params = () => ({ thr: sl('sThr') / 100, sat: sl('sSat') / 100, gap: sl('sGap'), min: sl('sMin'), smooth: sl('sSm'), sliver: sl('sSliv'), decl: sl('sDecl'), sag: sl('sSag') })
 
 function currentLineMask(includeBarriers = true): Uint8Array {
   let line = smoothMask(thresholdInk(doc.ink!, params().thr), doc.W, doc.H, params().smooth)
@@ -287,8 +287,8 @@ function runFlat(matchOld: boolean) {
   worker().postMessage({
     t: 'flat', line: line.buffer, ink: ink.buffer, W: doc.W, H: doc.H,
     maxGap: p.gap, minArea: p.min, sliverW: p.sliver, autoMerge: ($<HTMLInputElement>('cMerge')).checked,
-    declutter: p.decl,
-    segKey: `${doc.W}|${p.thr}|${p.smooth}|${p.gap}|${p.sat}|${strokesVersion}|${($<HTMLInputElement>('cSkel')).checked}`,
+    declutter: p.decl, sagTau: p.sag,
+    segKey: `${doc.W}|${p.thr}|${p.smooth}|${p.gap}|${p.sat}|${strokesVersion}|${($<HTMLInputElement>('cSkel')).checked}|${p.sag}`,
     flowKey: `${doc.W}|${p.sat}`,
     useGpu: ($<HTMLInputElement>('cGpu')).checked,
     token: tk,
@@ -619,8 +619,8 @@ function runPreviewFlat() {
     t: 'flat', line: line4.buffer, ink: ink4.buffer, W: W4, H: H4,
     maxGap: Math.max(1, Math.round(p.gap / 4)), minArea: Math.max(4, Math.round(p.min / 16)),
     sliverW: Math.round(p.sliver / 4), autoMerge: ($<HTMLInputElement>('cMerge')).checked,
-    declutter: p.decl,
-    segKey: `pv|${W4}|${p.thr}|${p.smooth}|${p.gap}|${p.sat}|${strokesVersion}|${($<HTMLInputElement>('cSkel')).checked}`,
+    declutter: p.decl, sagTau: p.sag ? Math.max(1, p.sag / 4) : 0,
+    segKey: `pv|${W4}|${p.thr}|${p.smooth}|${p.gap}|${p.sat}|${strokesVersion}|${($<HTMLInputElement>('cSkel')).checked}|${p.sag}`,
     flowKey: `pv|${W4}|${p.sat}`,
     token: tk,
   }, [line4.buffer, ink4.buffer])
@@ -962,6 +962,7 @@ const sliderLive = () => {
   $('vSliv').textContent = sl('sSliv') + 'px'
   $('vPal').textContent = sl('sPal') ? '' + sl('sPal') : 'unique'
   $('vDecl').textContent = sl('sDecl') ? '' + sl('sDecl') : 'off'
+  $('vSag').textContent = sl('sSag') ? sl('sSag') + 'px' : 'off'
 }
 let pvTimer = 0
 let lastSat = -1
@@ -977,7 +978,7 @@ const schedulePreview = () => {
   }, 150)
 }
 for (const id of ['sThr', 'sSat', 'sSm']) $(id).oninput = () => { resetAutoBridge(); sliderLive(); setDirty(true); schedulePreview(); scheduleQuickFlat() }
-for (const id of ['sGap', 'sMin', 'sSliv', 'sDecl']) $(id).oninput = () => { resetAutoBridge(); sliderLive(); setDirty(true); scheduleQuickFlat() }
+for (const id of ['sGap', 'sMin', 'sSliv', 'sDecl', 'sSag']) $(id).oninput = () => { resetAutoBridge(); sliderLive(); setDirty(true); scheduleQuickFlat() }
 // palette is a pure recolour: no re-segmentation, so apply it immediately
 $('sPal').oninput = () => {
   sliderLive()

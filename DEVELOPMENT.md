@@ -36,6 +36,8 @@ src/
     ink.ts            line extraction -> ink density (0..255); alpha-only + colour rejection
     morphology.ts     chamfer distance transform, morphological closing/despeckle, skeletonize
     trappedBall.ts    multi-radius trapped-ball segmentation + pocket labelling
+    membrane.ts       Poisson "rubber sheet" sag field, multigrid (optional segmenter)
+    sag.ts            persistence watershed on the sag field -> regions
     expand.ts         growLabels(): bucketed-Dijkstra multi-source growth (soft watershed)
     regions.ts        tiny-region absorption, id compaction, background detection
     slivers.ts        merge corridor slivers (space between parallel strokes)
@@ -67,6 +69,9 @@ is deliberately separable so parameter changes only re-run what they invalidate.
    ball fits (`dist > r`) and grow back r, so large safe areas fill first, small
    details last, and nothing floods the image. Leftover free pixels attach to the
    nearest **connected** region; only enclosed pockets become new regions.
+   *Or*, when the **Rubber sheet** slider is up, [sag.ts](src/core/sag.ts) replaces
+   this stage entirely — see "The rubber sheet" below. It emits the same
+   `core` (0 on ink) so every later stage is unchanged.
 4. **Line-centre expansion** ([expand.ts](src/core/expand.ts)) — all labels grow
    simultaneously in chamfer-distance order (bucketed Dijkstra, 8-conn). Fronts
    meet at the medial axis → fills reach stroke centres. **Soft watershed:** growth
@@ -220,9 +225,11 @@ Accept All. Cluster Small merges small open-bordered fills.
   Note **gap closing and layer reduction pull in opposite directions**: bridging a
   leak correctly splits one region into two, so Auto-bridge slightly raises the
   count while declutter lowers it a lot.
-- Browser-preview MCP and the Chrome bridge were both unavailable in the build
-  environment, so all validation was **headless** (see Testing). Do a real
-  in-browser pass when possible, especially for the GPU path and PSD-in-Photoshop.
+- **Rubber sheet is ~3× the cost** of a trapped-ball flat (3.5s vs 1.1s at 5.6MP,
+  5.9s at 8MP) and is off by default for that reason.
+- Most validation is **headless** (see Testing); the app itself has since been
+  driven in-browser. The **GPU path and PSD-in-Photoshop remain unverified**, as
+  do the Safari-specific open fixes (checked only in Chromium).
 
 ## Testing
 
@@ -242,6 +249,61 @@ core modules against the sample images:
   (no whole-image leak), max non-bg fill stays small, no explosion of tiny regions,
   fills reach stroke centres (render with line layer off — adjacent fills should
   abut with no seam).
+
+## The rubber sheet ([membrane.ts](src/core/membrane.ts), [sag.ts](src/core/sag.ts))
+
+An alternative to the whole trapped-ball → declutter → sliver stack, behind the
+**Rubber sheet** slider (`sagTau`, 0 = off). Pin a membrane to the frame wherever
+there is ink, let gravity pull:
+
+    -laplace(u) = 1   on free space,   u = 0 on ink and at the border
+
+and report `sqrt(8u)`, which is in pixels — in a channel of width *w* it reads
+*w*. Fills are the valleys of that field.
+
+**Why it beats a distance transform**, which measures the same "roominess": the
+distance transform is only C⁰ and ridges along the whole medial axis, so a
+watershed on it shatters every limb into a basin per bump. The membrane is
+smooth and, for a convex region, √u is concave (Makar-Limanov) — a convex region
+has *exactly one* maximum. And roominess is quadratic in width, so a narrow leak
+sits in a deep col while barely denting a distance field.
+
+Segmentation is a descending priority flood from every local max, with two
+merge rules:
+
+| Rule | Merges when | Kills |
+|---|---|---|
+| Persistence | basin peak stands < `tau` above the col (or < 30% of it) | limb waists, soft bulges, hatching pockets |
+| Ink justification | col wider than `2*maxGap` **and** the ridge through it doesn't reach ink within budget on both sides | the seam between two lobes of one open background |
+
+One `tau`, in pixels, does the job of gap size + min region + sliver width +
+declutter. Measured on the six samples: **615 → 153, 396 → 129, 530 → 132 fills**
+before any postprocessing, with figures grouped the way a person would.
+
+Three things cost real debugging time, all recorded in the source:
+
+- **The multigrid diverged on line art** (~2× per cycle, max sag 200 → 855 010 by
+  cycle 20) while converging perfectly on a synthetic disc. Coarsening turns
+  every thin channel into ink, so the coarse grid is a *different problem* and
+  its correction can point the wrong way. Fixed with a line search on the coarse
+  correction — at worst it picks α = 0 and the cycle degenerates to smoothing.
+- **The line search must minimise the A-norm of the error** (`α = <r,e>/<e,Ae>`),
+  not the residual. A coarse correction is *supposed* to raise the residual
+  (post-smoothing clears what it introduces); minimising the residual settles on
+  α ≈ 0.08 and the solver stalls.
+- **Never zero the prolonged correction** where the coarse grid has no cell —
+  that puts cliffs into `e`, and the line search then measures the cliffs.
+
+`cycles` is a safety cap, not a knob: it stops at `‖r‖ < 1e-2‖r₀‖`, which lands
+inside the ⅛-px quantisation (measured max error 0.36px vs a fully converged
+solve). ~3× a trapped-ball flat; cached in `segCache`, so only re-segmentation
+pays it.
+
+**Deliberately not shipped:** the ridge walk knows every break in the ink that
+two areas touch through, which looks like a free source of gap suggestions. It
+isn't — a boundary this pass keeps is one the fills already respect, so bridging
+it closes nothing. Of ~490 sites on Lineart1, 2 survived [closure.ts](src/core/closure.ts),
+and only because front analysis had found them independently.
 
 ## Too many layers (solved, four ways)
 
