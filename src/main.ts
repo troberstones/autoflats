@@ -109,7 +109,7 @@ function rebuildFills() {
   const cr = new Uint8Array(n), cg = new Uint8Array(n), cb = new Uint8Array(n), ca = new Uint8Array(n)
   for (let i = 1; i < n; i++) {
     const root = doc.regions[lut[i]]
-    if (!root || !root.visible) continue
+    if (!root || !root.visible || root.deleted) continue
     cr[i] = root.color[0]; cg[i] = root.color[1]; cb[i] = root.color[2]; ca[i] = 255
   }
   const d = fillsImg.data, lb = doc.labels
@@ -160,7 +160,9 @@ function regionRow(r: Region, kid: boolean): HTMLDivElement {
   sw.oninput = () => { r.color = hexToRgb(sw.value); rebuildFills() }
   const nm = document.createElement('span')
   nm.className = 'nm'
-  nm.textContent = r.name + (r.isBg ? ' (bg)' : '')
+  const grp = r.group ? doc.groups.find(g => g.id === r.group) : null
+  nm.textContent = r.name + (r.isBg ? ' (bg)' : '') + (grp ? ' · ' + grp.name : '')
+  if (grp) nm.title = 'In group "' + grp.name + '" — exports as a PSD folder'
   nm.ondblclick = () => { const v = prompt('Layer name', r.name); if (v) { r.name = v; rebuildPanel() } }
   const ar = document.createElement('span')
   ar.className = 'ar'
@@ -176,7 +178,7 @@ function regionRow(r: Region, kid: boolean): HTMLDivElement {
 function rebuildPanel() {
   const panel = $('layers')
   panel.innerHTML = ''
-  const roots = doc.roots()
+  const roots = doc.roots().filter(r => !r.deleted)
   const groups = new Map<string, Region[]>()
   for (const r of roots) {
     const k = rgbToHex(r.color)
@@ -258,6 +260,9 @@ function runFlat(matchOld: boolean) {
       // palette and any manual recolouring); a fresh flat assigns the palette
       if (oldLabels && oldRegions && oldLut) matchColors(oldLabels, oldRegions, oldLut)
       else applyPalette(sl('sPal'))
+      // groups are stored as lasso geometry, so re-derive membership against
+      // the freshly renumbered regions -- this is what makes them persist
+      assignGroups()
       if (prev.core) pushUndo({ label: 'flat', heavy: true, undo: () => { doc.core = prev.core; doc.labels = prev.labels; doc.regions = prev.regions; afterModelChange() } })
       setDirty(false)
       view.paths = m.paths ?? []
@@ -311,7 +316,85 @@ function matchColors(oldLabels: Int32Array, oldRegions: Region[], oldLut: Int32A
     if (!nr || !or) continue
     usedNew.add(n); usedOld.add(o)
     nr.color = or.color; nr.name = or.name; nr.visible = or.visible
+    nr.deleted = or.deleted // a fill the user removed stays removed after a re-flat
   }
+}
+
+// ---------- groups ----------
+// Rasterize a lasso: the closed polygon's interior PLUS the drawn path itself,
+// so a stroke dragged *through* fills selects them just as an enclosing loop does.
+function rasterizeLasso(path: number[]): Uint8Array {
+  const cv = document.createElement('canvas')
+  cv.width = doc.W; cv.height = doc.H
+  const c = cv.getContext('2d')!
+  c.fillStyle = '#fff'
+  c.strokeStyle = '#fff'
+  c.lineWidth = 3
+  c.lineCap = c.lineJoin = 'round'
+  c.beginPath()
+  c.moveTo(path[0], path[1])
+  for (let i = 2; i < path.length; i += 2) c.lineTo(path[i], path[i + 1])
+  c.closePath()
+  c.fill()
+  c.stroke()
+  const d = c.getImageData(0, 0, doc.W, doc.H).data
+  const m = new Uint8Array(doc.W * doc.H)
+  for (let i = 0; i < m.length; i++) if (d[i * 4 + 3] > 64) m[i] = 1
+  return m
+}
+
+// Recompute group membership from the stored lasso geometry. Called after every
+// flat, which is what lets groups survive re-flatting even though a flat
+// renumbers every region.
+const GROUP_COVER = 0.25 // fraction of a fill that must fall inside the lasso
+function assignGroups() {
+  if (!doc.labels) return
+  for (const r of doc.regions) if (r) r.group = 0
+  if (!doc.groups.length) return
+  const lut = doc.rootLut(), lb = doc.labels
+  for (const g of doc.groups) {
+    const mask = rasterizeLasso(g.path)
+    const inside = new Map<number, number>(), total = new Map<number, number>()
+    for (let i = 0; i < lb.length; i++) {
+      const root = lut[lb[i]]
+      if (!root) continue
+      total.set(root, (total.get(root) ?? 0) + 1)
+      if (mask[i]) inside.set(root, (inside.get(root) ?? 0) + 1)
+    }
+    for (const [root, n] of inside) {
+      const r = doc.regions[root]
+      if (!r || r.isBg || r.deleted) continue // never swallow the background
+      if (n >= GROUP_COVER * (total.get(root) ?? 1)) r.group = g.id
+    }
+  }
+}
+
+function groupFromStroke(pts: number[]) {
+  if (!doc.labels || pts.length < 6) return
+  const name = prompt('Group name', 'Group ' + doc.nextGroup)
+  if (!name) return
+  const g = { id: doc.nextGroup++, name, path: pts }
+  doc.groups.push(g)
+  assignGroups()
+  const n = doc.roots().filter(r => r.group === g.id).length
+  if (!n) {
+    doc.groups.pop(); doc.nextGroup--
+    status('Group: the lasso caught no fills')
+    return
+  }
+  pushUndo({ label: 'group', undo: () => { doc.groups.splice(doc.groups.indexOf(g), 1); assignGroups(); rebuildPanel() } })
+  rebuildPanel()
+  status(`Grouped ${n} fill${n > 1 ? 's' : ''} as "${name}" — exports as a PSD folder, and survives re-flatting`)
+}
+
+function deleteFill(id: number) {
+  const r = doc.regions[id]
+  if (!r || r.deleted) return
+  r.deleted = true
+  pushUndo({ label: 'delete fill', undo: () => { r.deleted = false; rebuildFills(); rebuildPanel() } })
+  rebuildFills()
+  rebuildPanel()
+  status(`Deleted "${r.name}"`)
 }
 
 // ---------- palette quantization ----------
@@ -379,7 +462,7 @@ function afterModelChange() {
 function setTool(t: Tool) {
   view.tool = t
   mergeFirst = 0
-  for (const [id, tt] of [['tPan', 'pan'], ['tFill', 'fill'], ['tBarrier', 'barrier'], ['tEraser', 'eraser'], ['tMerge', 'merge'], ['tDraw', 'dmerge']] as const)
+  for (const [id, tt] of [['tPan', 'pan'], ['tFill', 'fill'], ['tBarrier', 'barrier'], ['tEraser', 'eraser'], ['tMerge', 'merge'], ['tDraw', 'dmerge'], ['tDel', 'delfill'], ['tGroup', 'group']] as const)
     $(id).classList.toggle('active', tt === t)
 }
 
@@ -392,6 +475,7 @@ view.onClick = (fx, fy, e) => {
   const id = doc.root(doc.labels[y * doc.W + x])
   if (!id) return
   const r = doc.regions[id]
+  if (view.tool === 'delfill') { deleteFill(id); return }
   if (view.tool === 'fill') {
     if (e.altKey) { ($('curColor') as HTMLInputElement).value = rgbToHex(r.color); return }
     if (r.isBg) { carveAt(y * doc.W + x); return }
@@ -444,6 +528,7 @@ function carveAt(idx: number) {
 
 view.onStroke = pts => {
   if (!doc.src) return
+  if (view.tool === 'group') { groupFromStroke(pts); return }
   if (view.tool === 'dmerge') { mergeAlongStroke(pts); return }
   if (view.tool !== 'barrier' && view.tool !== 'eraser') return
   const s: Stroke = { pts, mode: view.tool === 'eraser' ? 'erase' : 'draw' }
@@ -747,6 +832,8 @@ async function loadFile(f: File) {
   doc.core = doc.labels = null
   doc.regions = []
   doc.strokes = []
+  doc.groups = []
+  doc.nextGroup = 1
   doc.barrierMask = new Uint8Array(doc.W * doc.H)
   undoStack.length = 0
   resetAutoBridge()
@@ -773,7 +860,10 @@ async function doExport() {
   if (!doc.labels) return
   status('Exporting…', true)
   await new Promise(r => setTimeout(r))
-  const regions: ExportRegion[] = doc.roots().map(r => ({ id: r.id, color: r.color, name: r.name, hidden: !r.visible }))
+  const regions: ExportRegion[] = doc.roots().filter(r => !r.deleted).map(r => ({
+    id: r.id, color: r.color, name: r.name, hidden: !r.visible,
+    group: r.group ? doc.groups.find(g => g.id === r.group)?.name : undefined,
+  }))
   const mode = ($('expMode') as HTMLSelectElement).value as ExportMode
   const blob = new Blob([exportPsd(doc.W, doc.H, doc.labels, doc.rootLut(), regions, doc.ink!, mode)], { type: 'image/vnd.adobe.photoshop' })
   const name = doc.name + '.psd'
@@ -816,6 +906,8 @@ $('tBarrier').onclick = () => setTool('barrier')
 $('tEraser').onclick = () => setTool('eraser')
 $('tMerge').onclick = () => setTool('merge')
 $('tDraw').onclick = () => setTool('dmerge')
+$('tDel').onclick = () => setTool('delfill')
+$('tGroup').onclick = () => setTool('group')
 
 function doUndo() {
   const op = undoStack.pop()
@@ -856,6 +948,8 @@ addEventListener('keydown', e => {
   else if (k === 'g') setTool('barrier')
   else if (k === 'e') setTool('eraser')
   else if (k === 'm') setTool('merge')
+  else if (k === 'x') setTool('delfill')
+  else if (k === 'r') setTool('group')
   else if (k === 'd') setTool('dmerge')
 })
 

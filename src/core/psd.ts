@@ -1,6 +1,9 @@
 import { writePsd, type Psd, type Layer } from 'ag-psd'
 
-export interface ExportRegion { id: number; color: [number, number, number]; name: string; hidden: boolean }
+export interface ExportRegion {
+  id: number; color: [number, number, number]; name: string; hidden: boolean
+  group?: string // user-drawn group -> its own PSD folder
+}
 
 // How fills become layers:
 //  'region' - one layer per fill (every region independently editable). When
@@ -28,7 +31,21 @@ export function exportPsd(W: number, H: number, labels: Int32Array, rootOf: Int3
   // In the merged modes a hidden fill could not be toggled back on, so it is
   // left out of the export entirely; per-region keeps it as a hidden layer.
   const included = (r: ExportRegion) => mode === 'region' || !r.hidden
-  const keyOf = (r: ExportRegion) => mode === 'flat' ? 0 : mode === 'color' ? ckey(r.color) : r.id
+
+  // User groups become folders, and the export mode applies WITHIN each folder:
+  // the same colour appearing in two groups stays two layers, one per folder.
+  // Group index is therefore part of the layer key.
+  const groupNames: string[] = []
+  const gi = new Map<number, number>() // region id -> 0 (ungrouped) or 1+
+  for (const r of regions) {
+    if (!r.group) { gi.set(r.id, 0); continue }
+    let k = groupNames.indexOf(r.group)
+    if (k < 0) { groupNames.push(r.group); k = groupNames.length - 1 }
+    gi.set(r.id, k + 1)
+  }
+  const GSPAN = 2 ** 25
+  const keyOf = (r: ExportRegion) =>
+    gi.get(r.id)! * GSPAN + (mode === 'flat' ? 0 : mode === 'color' ? ckey(r.color) : r.id)
 
   // tight bounds per output layer
   const bounds = new Map<number, [number, number, number, number]>() // minX,minY,maxX,maxY
@@ -71,50 +88,52 @@ export function exportPsd(W: number, H: number, labels: Int32Array, rootOf: Int3
 
   const children: Layer[] = [{ name: 'Background', imageData: bg as ImageData, left: 0, top: 0 }]
 
-  if (mode === 'flat') {
-    const l = layerOf(0, 'Flats')
-    if (l) children.push(l)
-  } else if (mode === 'color') {
-    // one layer per colour, in the order the colours first appear (regions
-    // arrive largest-first, so the biggest areas end up lowest)
-    const seen = new Map<number, number>() // colour -> region count
-    const order: number[] = []
-    for (const r of regions) {
-      if (r.hidden) continue
-      const k = ckey(r.color)
-      if (!seen.has(k)) { seen.set(k, 0); order.push(k) }
-      seen.set(k, seen.get(k)! + 1)
+  // layers for one bucket of regions, per the export mode
+  const layersFor = (rs: ExportRegion[], label: string): Layer[] => {
+    if (!rs.length) return []
+    if (mode === 'flat') {
+      const l = layerOf(keyOf(rs[0]), label) // whole bucket shares one key
+      return l ? [l] : []
     }
-    order.forEach((k, i) => {
-      const l = layerOf(k, `Color ${i + 1} (${seen.get(k)} fills)`)
-      if (l) children.push(l)
-    })
-  } else {
-    // per region; nest into colour folders only when colours are actually
-    // shared (otherwise every folder would hold a single layer)
-    const groups = new Map<number, ExportRegion[]>()
-    for (const r of regions) {
-      const k = ckey(r.color)
-      const g = groups.get(k)
-      if (g) g.push(r); else groups.set(k, [r])
+    if (mode === 'color') {
+      const seen = new Map<number, number>(), order: number[] = []
+      for (const r of rs) {
+        if (r.hidden) continue
+        const k = keyOf(r)
+        if (!seen.has(k)) { seen.set(k, 0); order.push(k) }
+        seen.set(k, seen.get(k)! + 1)
+      }
+      return order.map((k, i) => layerOf(k, `Color ${i + 1} (${seen.get(k)} fills)`)).filter(Boolean) as Layer[]
     }
-    if (groups.size < regions.length) {
+    return rs.map(r => layerOf(keyOf(r), r.name, r.hidden)).filter(Boolean) as Layer[]
+  }
+
+  const ungrouped = regions.filter(r => !r.group)
+  const hasGroups = groupNames.length > 0
+  // Ungrouped fills stay at the top level. Colour folders are used only when
+  // the user has not drawn groups of their own, so folders never nest 2 deep.
+  if (mode === 'region' && !hasGroups) {
+    const byColor = new Map<number, ExportRegion[]>()
+    for (const r of ungrouped) {
+      const k = ckey(r.color)
+      const g = byColor.get(k)
+      if (g) g.push(r); else byColor.set(k, [r])
+    }
+    if (byColor.size < ungrouped.length) {
       let i = 0
-      for (const [, rs] of groups) {
-        const kids: Layer[] = []
-        for (const r of rs) {
-          const l = layerOf(r.id, r.name, r.hidden)
-          if (l) kids.push(l)
-        }
+      for (const [, rs] of byColor) {
+        const kids = layersFor(rs, '')
         if (kids.length) children.push({ name: `Color ${++i} (${kids.length} fills)`, opened: false, children: kids })
       }
-    } else {
-      for (const r of regions) {
-        const l = layerOf(r.id, r.name, r.hidden)
-        if (l) children.push(l)
-      }
-    }
+    } else children.push(...layersFor(ungrouped, 'Flats'))
+  } else {
+    children.push(...layersFor(ungrouped, 'Flats'))
   }
+  // one folder per user-drawn group
+  groupNames.forEach((name, k) => {
+    const kids = layersFor(regions.filter(r => gi.get(r.id) === k + 1), name)
+    if (kids.length) children.push({ name, opened: false, children: kids })
+  })
 
   children.push({ name: 'Line Art', imageData: lineImg as ImageData, left: 0, top: 0 })
 

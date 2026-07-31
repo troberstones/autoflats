@@ -312,6 +312,26 @@ In the merged modes a hidden fill could not be toggled back on, so hidden fills
 are omitted entirely; per-region keeps them as hidden layers. Verified by
 round-trip: 57 fills → 7 top-level entries (5 colour folders / 5 colour layers).
 
+### 3b. User groups & deleted fills ([main.ts](src/main.ts) `assignGroups`)
+
+The 🔗 tool lassoes fills into a named group that exports as a **PSD folder**;
+🗑 deletes a fill (dropped from render and export). Both must survive a re-flat,
+which is the whole design problem: **a flat renumbers every region**, so a group
+cannot be a list of ids.
+
+- **Groups are stored as the drawn path** (`Group.path`), not membership.
+  `assignGroups()` re-rasterizes each lasso after every flat and re-derives
+  membership: a fill joins when ≥`GROUP_COVER` (25%) of it falls inside. The
+  polygon interior *and* the stroke itself are rasterized, so dragging a line
+  *through* fills selects them just like enclosing them. Background never joins.
+- **Deletion** rides the existing overlap matcher — `matchColors` carries
+  `deleted` from the old region to its best-overlapping successor.
+
+In [psd.ts](src/core/psd.ts) a group index is part of the layer key, so the export
+mode applies *within* each folder: the same colour in two groups stays two
+layers. Colour folders are used only when no user groups exist, so folders never
+nest two deep.
+
 ### 4. Colour-grouped panel ([main.ts](src/main.ts) `rebuildPanel`)
 
 Once colours are shared, the panel shows one collapsible row per colour with a

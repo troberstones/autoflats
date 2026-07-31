@@ -6,7 +6,15 @@ export interface Region {
   parent: number // region-level merge (union-find); parent === id when root
   area: number
   isBg: boolean
+  deleted?: boolean // removed by the user: not rendered, not exported
+  group?: number    // Group.id, or 0/undefined when ungrouped
 }
+
+// A user-drawn grouping. Stored as the drawn PATH, not a list of region ids:
+// a re-flat renumbers every region, so membership is recomputed from the
+// geometry each time (see assignGroups in main.ts). That is what makes groups
+// survive re-flatting.
+export interface Group { id: number; name: string; path: number[] }
 
 export interface Stroke { pts: number[]; mode: 'draw' | 'erase' }
 
@@ -21,6 +29,8 @@ export class Doc {
   regions: Region[] = [] // indexed by id (0 unused)
   strokes: Stroke[] = []
   barrierMask: Uint8Array | null = null
+  groups: Group[] = []
+  nextGroup = 1
 
   root(id: number): number {
     while (this.regions[id] && this.regions[id].parent !== id) id = this.regions[id].parent

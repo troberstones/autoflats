@@ -1,6 +1,6 @@
-export type Tool = 'pan' | 'fill' | 'barrier' | 'eraser' | 'merge' | 'dmerge'
-const STROKE_TOOLS: Tool[] = ['barrier', 'eraser', 'dmerge']
-const STROKE_COLORS: Record<string, string> = { barrier: '#39f', eraser: '#f66', dmerge: '#4f4' }
+export type Tool = 'pan' | 'fill' | 'barrier' | 'eraser' | 'merge' | 'dmerge' | 'delfill' | 'group'
+const STROKE_TOOLS: Tool[] = ['barrier', 'eraser', 'dmerge', 'group']
+const STROKE_COLORS: Record<string, string> = { barrier: '#39f', eraser: '#f66', dmerge: '#4f4', group: '#fc0' }
 
 export class CanvasView {
   ctx: CanvasRenderingContext2D
@@ -148,6 +148,13 @@ export class CanvasView {
       ctx.beginPath()
       ctx.moveTo(this.stroke[0], this.stroke[1])
       for (let i = 2; i < this.stroke.length; i += 2) ctx.lineTo(this.stroke[i], this.stroke[i + 1])
+      if (this.tool === 'group') {
+        // the lasso closes on release: show the closing edge and the area it
+        // will capture while the user is still drawing
+        ctx.closePath()
+        ctx.fillStyle = 'rgba(255,204,0,0.18)'
+        ctx.fill()
+      }
       ctx.stroke()
     }
     // gap suggestions: white halo + orange curve, constant screen-space width
