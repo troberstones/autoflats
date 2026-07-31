@@ -45,7 +45,9 @@ const setBusy = (b: boolean) => {
 }
 const setDirty = (d: boolean) => {
   dirty = d
-  $('badge').style.display = d && doc.labels ? '' : 'none'
+  // 'inline', not '': clearing the inline style falls back to the stylesheet,
+  // which sets display:none -- so the badge could never actually appear
+  $('badge').style.display = d && doc.labels ? 'inline' : 'none'
   if (d) scheduleAutoFlat()
 }
 // Auto-bridge rounds since the last explicit user action; bounded so a
@@ -376,9 +378,10 @@ function runFlat(matchOld: boolean) {
       // palette and any manual recolouring); a fresh flat assigns the palette
       if (oldLabels && oldRegions && oldLut) matchColors(oldLabels, oldRegions, oldLut)
       else applyPalette(sl('sPal'))
-      // groups are stored as lasso geometry, so re-derive membership against
-      // the freshly renumbered regions -- this is what makes them persist
-      assignGroups()
+      // draw-merges, deletions and groups are all stored as the geometry the
+      // user drew, so re-derive them against the freshly renumbered regions --
+      // this is what makes them survive a re-flat
+      replayEdits()
       if (prev.core) pushUndo({ label: 'flat', heavy: true, undo: () => { doc.core = prev.core; doc.labels = prev.labels; doc.regions = prev.regions; afterModelChange() } })
       setDirty(false)
       view.paths = m.paths ?? []
@@ -404,7 +407,7 @@ function runFlat(matchOld: boolean) {
     t: 'flat', line: line.buffer, ink: ink.buffer, W: doc.W, H: doc.H,
     maxGap: p.gap, minArea: p.min, sliverW: p.sliver, autoMerge: ($<HTMLInputElement>('cMerge')).checked,
     declutter: p.decl, sagTau: p.sag,
-    segKey: `${doc.W}|${p.thr}|${p.smooth}|${p.gap}|${p.sat}|${strokesVersion}|${($<HTMLInputElement>('cSkel')).checked}|${p.sag}`,
+    segKey: `${doc.W}|${p.thr}|${p.smooth}|${p.gap}|${p.sat}|${strokesVersion}|${($<HTMLInputElement>('cSkel')).checked}|${p.sag}|${($<HTMLInputElement>('cGpu')).checked}`,
     flowKey: `${doc.W}|${p.sat}`,
     useGpu: ($<HTMLInputElement>('cGpu')).checked,
     token: tk,
@@ -498,19 +501,153 @@ function groupFromStroke(pts: number[]) {
     status('Group: the lasso caught no fills')
     return
   }
-  pushUndo({ label: 'group', undo: () => { doc.groups.splice(doc.groups.indexOf(g), 1); assignGroups(); rebuildPanel() } })
-  rebuildPanel()
+  pushUndo({ label: 'group', undo: () => { doc.groups.splice(doc.groups.indexOf(g), 1); assignGroups(); refreshView() } })
+  refreshView()
   status(`Grouped ${n} fill${n > 1 ? 's' : ''} as "${name}" — exports as a PSD folder, and survives re-flatting`)
 }
 
-function deleteFill(id: number) {
+function deleteFill(id: number, x: number, y: number) {
   const r = doc.regions[id]
   if (!r || r.deleted) return
+  const mark = { id: doc.nextEdit++, x, y }
+  doc.deleteMarks.push(mark)
   r.deleted = true
-  pushUndo({ label: 'delete fill', undo: () => { r.deleted = false; rebuildFills(); rebuildPanel() } })
-  rebuildFills()
-  rebuildPanel()
-  status(`Deleted "${r.name}"`)
+  pushUndo({
+    label: 'delete fill',
+    undo: () => { doc.deleteMarks.splice(doc.deleteMarks.indexOf(mark), 1); r.deleted = false; refreshView() },
+  })
+  refreshView()
+  status(`Deleted "${r.name}" — the ✖ marker survives re-flatting; ⬚ removes it`)
+}
+
+// Replay every remembered edit against the current regions. Called after each
+// flat, which renumbers everything: merges first because they decide which
+// roots exist, then deletions, then group membership. Deletion is rebuilt from
+// scratch rather than carried over, so removing a mark genuinely un-deletes.
+function replayEdits() {
+  if (!doc.labels) return
+  for (const s of doc.mergeStrokes) applyMergeStroke(s.pts)
+  for (const r of doc.regions) if (r) r.deleted = false
+  for (const m of doc.deleteMarks) {
+    const x = m.x | 0, y = m.y | 0
+    if (x < 0 || y < 0 || x >= doc.W || y >= doc.H) continue
+    const r = doc.regions[doc.root(doc.labels[y * doc.W + x])]
+    if (r) r.deleted = true
+  }
+  assignGroups()
+}
+
+// ---------- remembered edits: overlay, picking, removal ----------
+type EditKind = 'merge' | 'delete' | 'group'
+interface EditRef { kind: EditKind; id: number; pts: number[]; label: string }
+const selectedEdits = new Set<string>() // `${kind}:${id}`
+const editKey = (h: { kind: EditKind; id: number }) => h.kind + ':' + h.id
+
+function editList(): EditRef[] {
+  const out: EditRef[] = []
+  for (const s of doc.mergeStrokes) out.push({ kind: 'merge', id: s.id, pts: s.pts, label: 'draw merge' })
+  for (const m of doc.deleteMarks) out.push({ kind: 'delete', id: m.id, pts: [m.x, m.y], label: 'deleted fill' })
+  for (const g of doc.groups) out.push({ kind: 'group', id: g.id, pts: g.path, label: `group "${g.name}"` })
+  return out
+}
+
+function rebuildEditView() {
+  view.showEdits = ($<HTMLInputElement>('cEdits')).checked
+  view.edits = editList().map(h => ({ kind: h.kind, pts: h.pts, selected: selectedEdits.has(editKey(h)) }))
+  view.render()
+}
+
+const pointInPoly = (x: number, y: number, p: number[]) => {
+  let inside = false
+  for (let i = 0, j = p.length - 2; i < p.length; j = i, i += 2) {
+    if ((p[i + 1] > y) !== (p[j + 1] > y) &&
+        x < (p[j] - p[i]) * (y - p[i + 1]) / (p[j + 1] - p[i + 1]) + p[i]) inside = !inside
+  }
+  return inside
+}
+
+// Nearest edit within a constant on-screen radius. A group's interior counts as
+// a hit, but scores worse than any actual line, so a merge stroke drawn inside
+// a lasso is still the thing you pick when you click it.
+function editAt(x: number, y: number): EditRef | null {
+  const reach = 10 / view.scale
+  let best: EditRef | null = null, bd = reach
+  for (const h of editList()) {
+    let d = Infinity
+    if (h.kind === 'delete') d = Math.hypot(h.pts[0] - x, h.pts[1] - y)
+    else {
+      for (let i = 0; i + 3 < h.pts.length; i += 2) d = Math.min(d, distToSeg(x, y, h.pts[i], h.pts[i + 1], h.pts[i + 2], h.pts[i + 3]))
+      if (h.kind === 'group' && h.pts.length >= 6) {
+        d = Math.min(d, distToSeg(x, y, h.pts[h.pts.length - 2], h.pts[h.pts.length - 1], h.pts[0], h.pts[1]))
+        if (d > reach && pointInPoly(x, y, h.pts)) d = reach * 0.99
+      }
+    }
+    if (d < bd) { bd = d; best = h }
+  }
+  return best
+}
+
+function pickEdit(x: number, y: number, additive: boolean) {
+  const h = editAt(x, y)
+  if (!h) { if (!additive) { selectedEdits.clear(); rebuildEditView(); status('') } return }
+  const k = editKey(h)
+  if (!additive) selectedEdits.clear()
+  if (selectedEdits.has(k)) selectedEdits.delete(k); else selectedEdits.add(k)
+  rebuildEditView()
+  status(selectedEdits.size
+    ? `${selectedEdits.size} edit${selectedEdits.size > 1 ? 's' : ''} selected (${h.label}) — Delete removes, Shift-click adds`
+    : '')
+}
+
+function boxSelectEdits(x0: number, y0: number, x1: number, y1: number, additive: boolean) {
+  if (!additive) selectedEdits.clear()
+  for (const h of editList()) {
+    for (let i = 0; i < h.pts.length; i += 2) {
+      if (h.pts[i] >= x0 && h.pts[i] <= x1 && h.pts[i + 1] >= y0 && h.pts[i + 1] <= y1) { selectedEdits.add(editKey(h)); break }
+    }
+  }
+  rebuildEditView()
+  status(selectedEdits.size ? `${selectedEdits.size} edit${selectedEdits.size > 1 ? 's' : ''} selected — Delete removes` : 'Nothing in the box')
+}
+
+function deleteSelectedEdits() {
+  if (!selectedEdits.size) return
+  const keys = new Set(selectedEdits)
+  const prev = { m: doc.mergeStrokes.slice(), d: doc.deleteMarks.slice(), g: doc.groups.slice() }
+  doc.mergeStrokes = doc.mergeStrokes.filter(s => !keys.has('merge:' + s.id))
+  doc.deleteMarks = doc.deleteMarks.filter(m => !keys.has('delete:' + m.id))
+  doc.groups = doc.groups.filter(g => !keys.has('group:' + g.id))
+  const droppedMerge = prev.m.length !== doc.mergeStrokes.length
+  selectedEdits.clear()
+  pushUndo({
+    label: 'remove edits',
+    undo: () => {
+      doc.mergeStrokes = prev.m; doc.deleteMarks = prev.d; doc.groups = prev.g
+      restoreAfterEditChange(droppedMerge)
+    },
+  })
+  restoreAfterEditChange(droppedMerge)
+  status(`Removed ${keys.size} edit${keys.size > 1 ? 's' : ''}` +
+    (droppedMerge ? ' — Re-Flat to un-merge the fills a removed stroke had joined' : ''))
+}
+
+// Deletions and groups are pure labels on the current regions, so dropping one
+// takes effect at once. A merge already collapsed two regions into one and
+// there is no record of the boundary any more, so undoing it needs the
+// segmentation rebuilt: flag the document instead of pretending.
+function restoreAfterEditChange(needsReflat: boolean) {
+  for (const r of doc.regions) if (r) r.deleted = false
+  if (doc.labels) {
+    for (const m of doc.deleteMarks) {
+      const x = m.x | 0, y = m.y | 0
+      if (x < 0 || y < 0 || x >= doc.W || y >= doc.H) continue
+      const r = doc.regions[doc.root(doc.labels[y * doc.W + x])]
+      if (r) r.deleted = true
+    }
+  }
+  assignGroups()
+  if (needsReflat) setDirty(true)
+  refreshView()
 }
 
 // ---------- palette quantization ----------
@@ -570,20 +707,33 @@ function applyPalette(K: number) {
 
 function afterModelChange() {
   selected = 0
+  refreshView()
+}
+
+// Everything the canvas and panel show, without disturbing the selection.
+function refreshView() {
   rebuildFills()
   rebuildPanel()
+  rebuildEditView()
 }
 
 // ---------- tools ----------
 function setTool(t: Tool) {
   view.tool = t
   mergeFirst = 0
-  for (const [id, tt] of [['tPan', 'pan'], ['tFill', 'fill'], ['tBarrier', 'barrier'], ['tEraser', 'eraser'], ['tMerge', 'merge'], ['tDraw', 'dmerge'], ['tDel', 'delfill'], ['tGroup', 'group']] as const)
+  for (const [id, tt] of [['tPan', 'pan'], ['tFill', 'fill'], ['tBarrier', 'barrier'], ['tEraser', 'eraser'], ['tMerge', 'merge'], ['tDraw', 'dmerge'], ['tDel', 'delfill'], ['tGroup', 'group'], ['tPick', 'pick']] as const)
     $(id).classList.toggle('active', tt === t)
+  // picking edits you cannot see would be a guessing game
+  if (t === 'pick' && !($<HTMLInputElement>('cEdits')).checked) ($<HTMLInputElement>('cEdits')).checked = true
+  if (t !== 'pick' && selectedEdits.size) selectedEdits.clear()
+  rebuildEditView()
 }
 
 view.onClick = (fx, fy, e) => {
   const x = fx | 0, y = fy | 0
+  // the picker works on the overlay, not the fills, so it runs before the
+  // bounds/label checks and before gap acceptance
+  if (view.tool === 'pick') { pickEdit(fx, fy, e.shiftKey); return }
   if (x < 0 || y < 0 || x >= doc.W || y >= doc.H) return
   // accepting a gap suggestion works with any tool
   if (view.paths.length && acceptSegNear(fx, fy)) return
@@ -591,7 +741,7 @@ view.onClick = (fx, fy, e) => {
   const id = doc.root(doc.labels[y * doc.W + x])
   if (!id) return
   const r = doc.regions[id]
-  if (view.tool === 'delfill') { deleteFill(id); return }
+  if (view.tool === 'delfill') { deleteFill(id, fx, fy); return }
   if (view.tool === 'fill') {
     if (e.altKey) { ($('curColor') as HTMLInputElement).value = rgbToHex(r.color); return }
     if (r.isBg) { carveAt(y * doc.W + x); return }
@@ -642,6 +792,8 @@ function carveAt(idx: number) {
   worker().postMessage({ t: 'carve', core: coreCopy.buffer, line: line.buffer, ink: inkCopy.buffer, W: doc.W, H: doc.H, idx, r: params().gap, token: tk }, [coreCopy.buffer, line.buffer, inkCopy.buffer])
 }
 
+view.onBox = (x0, y0, x1, y1, additive) => { if (view.tool === 'pick') boxSelectEdits(x0, y0, x1, y1, additive) }
+
 view.onStroke = pts => {
   if (!doc.src) return
   if (view.tool === 'group') { groupFromStroke(pts); return }
@@ -654,9 +806,30 @@ view.onStroke = pts => {
   setDirty(true)
 }
 
-// Draw merge: every fill the stroke crosses merges into the fill under its start
+// Draw merge: every fill the stroke crosses merges into the fill under its
+// start. Recorded as the stroke, so replayEdits() can run it again against the
+// renumbered regions after a re-flat.
 function mergeAlongStroke(pts: number[]) {
-  if (!doc.labels) return
+  const res = applyMergeStroke(pts)
+  if (typeof res === 'string') { status('Draw merge: ' + res); return }
+  const s = { id: doc.nextEdit++, pts }
+  doc.mergeStrokes.push(s)
+  pushUndo({
+    label: 'draw merge',
+    undo: () => {
+      doc.mergeStrokes.splice(doc.mergeStrokes.indexOf(s), 1)
+      for (const r of res.merged) { r.parent = r.id; res.into.area -= r.area }
+      refreshView()
+    },
+  })
+  selected = res.into.id
+  refreshView()
+  status(`Merged ${res.merged.length} fill${res.merged.length > 1 ? 's' : ''} into "${res.into.name}"`)
+}
+
+// The merge itself, with no bookkeeping: returns what it did, or why it didn't.
+function applyMergeStroke(pts: number[]): { into: Region; merged: Region[] } | string {
+  if (!doc.labels) return 'no fills yet'
   let start = 0
   const crossed = new Set<number>()
   const visit = (x: number, y: number) => {
@@ -672,9 +845,9 @@ function mergeAlongStroke(pts: number[]) {
     for (let s = 0; s <= steps; s++) visit(x1 + (x2 - x1) * s / steps, y1 + (y2 - y1) * s / steps)
   }
   if (pts.length === 2) visit(pts[0], pts[1])
-  if (!start) return
+  if (!start) return 'stroke missed every fill'
   const a = doc.regions[start]
-  if (a.isBg) { status('Draw merge: start the stroke on a fill, not the background'); return }
+  if (!a || a.isBg) return 'start the stroke on a fill, not the background'
   const merged: Region[] = []
   for (const cid of crossed) {
     const r = doc.regions[cid]
@@ -683,15 +856,8 @@ function mergeAlongStroke(pts: number[]) {
     a.area += r.area
     merged.push(r)
   }
-  if (!merged.length) { status('Draw merge: stroke crossed no other fills'); return }
-  pushUndo({
-    label: 'draw merge',
-    undo: () => { for (const r of merged) { r.parent = r.id; a.area -= r.area } rebuildFills(); rebuildPanel() },
-  })
-  selected = start
-  rebuildFills()
-  rebuildPanel()
-  status(`Merged ${merged.length} fill${merged.length > 1 ? 's' : ''} into "${a.name}"`)
+  if (!merged.length) return 'stroke crossed no other fills'
+  return { into: a, merged }
 }
 
 // ---------- quarter-res live preview ----------
@@ -953,6 +1119,11 @@ async function loadFile(f: File) {
   doc.strokes = []
   doc.groups = []
   doc.nextGroup = 1
+  doc.mergeStrokes = []
+  doc.deleteMarks = []
+  doc.nextEdit = 1
+  selectedEdits.clear()
+  view.edits = []
   doc.barrierMask = new Uint8Array(doc.W * doc.H)
   undoStack.length = 0
   resetAutoBridge()
@@ -1027,6 +1198,8 @@ $('tMerge').onclick = () => setTool('merge')
 $('tDraw').onclick = () => setTool('dmerge')
 $('tDel').onclick = () => setTool('delfill')
 $('tGroup').onclick = () => setTool('group')
+$('tPick').onclick = () => setTool('pick')
+$('cEdits').onchange = () => { if (!($<HTMLInputElement>('cEdits')).checked) selectedEdits.clear(); rebuildEditView() }
 
 function doUndo() {
   const op = undoStack.pop()
@@ -1061,6 +1234,8 @@ addEventListener('keydown', e => {
     else { view.render(); status('Bridged — Re-Flat to apply') }
     return
   }
+  if ((e.key === 'Delete' || e.key === 'Backspace') && selectedEdits.size) { e.preventDefault(); deleteSelectedEdits(); return }
+  if (e.key === 'Escape' && selectedEdits.size) { selectedEdits.clear(); rebuildEditView(); status(''); return }
   const k = e.key.toLowerCase()
   if (k === 'v') setTool('pan')
   else if (k === 'b') setTool('fill')
@@ -1070,6 +1245,7 @@ addEventListener('keydown', e => {
   else if (k === 'x') setTool('delfill')
   else if (k === 'r') setTool('group')
   else if (k === 'd') setTool('dmerge')
+  else if (k === 's') setTool('pick')
 })
 
 const sliderLive = () => {
@@ -1133,3 +1309,4 @@ if ((navigator as any).gpu) $('lGpu').hidden = false
 ;(window as any).__openUrl = async (u: string) =>
   openFile(new File([await (await fetch(u)).blob()], u.split('/').pop() || 'img.png'))
 ;(window as any).__view = view
+;(window as any).__doc = doc

@@ -82,8 +82,13 @@ export class GpuGrower {
 
     const mk = (usage: number, size = N * 4) => dev.createBuffer({ size, usage })
     const ST = 0x0080 /* STORAGE */, CD = 0x0008 /* COPY_DST */, CS = 0x0004 /* COPY_SRC */
+    // BOTH label buffers need COPY_SRC: the ping-pong ends on whichever side
+    // the last pass wrote, and with an even BATCH that is always labA. Creating
+    // labA without COPY_SRC made the final copy a validation error -- which
+    // WebGPU reports asynchronously rather than throwing, so grow() returned a
+    // zero-filled buffer and the caller's CPU fallback never fired.
     const distA = mk(ST | CD), distB = mk(ST | CD | CS)
-    const labA = mk(ST | CD), labB = mk(ST | CD | CS)
+    const labA = mk(ST | CD | CS), labB = mk(ST | CD | CS)
     const auxB = mk(ST | CD)
     const chg = mk(ST | CD | CS, 4)
     const uni = dev.createBuffer({ size: 16, usage: 0x0040 /* UNIFORM */ | CD })
@@ -139,6 +144,17 @@ export class GpuGrower {
     const out = new Int32Array(stagingLab.getMappedRange().slice(0))
     stagingLab.unmap()
     for (const b of [distA, distB, labA, labB, auxB, chg, uni, stagingChg, stagingLab]) b.destroy()
+    // Growth only ever ADDS labels, so a seeded input that comes back blank
+    // means the GPU produced nothing. WebGPU surfaces most failures on the
+    // error scope rather than by rejecting, so without this check a broken
+    // device returns a plausible-looking zero buffer and the whole flat is
+    // silently garbage. Throwing is what routes the caller to the CPU path.
+    let seeded = false, grown = false
+    for (let i = 0; i < N && !(seeded && grown); i++) {
+      if (labels[i]) seeded = true
+      if (out[i]) grown = true
+    }
+    if (seeded && !grown) throw new Error('GPU growth returned an empty label map')
     return out
   }
 }

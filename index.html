@@ -67,6 +67,7 @@
     <button id="tDraw"    title="Draw merge (D): stroke from a fill — every fill the stroke crosses merges into it">🧲</button>
     <button id="tDel"     title="Delete fill (X): click a fill to remove it — it stops rendering and is left out of the PSD. Survives re-flatting; ⌘Z restores">🗑</button>
     <button id="tGroup"   title="Group fills (R): lasso around or a stroke through a set of fills — they export as a PSD folder and the group survives re-flatting">🔗</button>
+    <button id="tPick"    title="Select edits (S): click a remembered edit — a draw-merge stroke, a ✖ delete marker or a group lasso — or drag a box around several. Shift-click adds. Delete removes them. Turns on the Edits overlay.">⬚</button>
   </div>
   <div id="wrap"><canvas id="view"></canvas></div>
   <div id="layers"></div>
@@ -89,6 +90,7 @@
     <label class="s">Line opacity <input type="range" id="sOp" min="0" max="100" value="100"></label>
     <label class="s"><input type="checkbox" id="cLines"> Show extracted lines</label>
     <label class="s" id="lSagView" title="Show the rubber sheet itself: black where it is pinned to the ink, brightening as it sags. Needs the Rubber sheet slider to be up."><input type="checkbox" id="cSagView"> Sag field <span id="vSagView" class="hint"></span></label>
+    <label class="s" title="Draw the edits that are remembered and replayed after every re-flat: draw-merge strokes (green), deleted-fill markers (red ✖) and group lassos (yellow). Pick and remove them with the ⬚ tool."><input type="checkbox" id="cEdits"> Edits</label>
     <label class="s" title="Outline the watershed ridges between fills. White where the ridge lies on ink (the artist drew that boundary); cyan where it crosses blank paper — a gap that got closed with nothing drawn across it."><input type="checkbox" id="cRidge"> Ridges</label>
     <button id="bUndo" disabled>Undo ⌘Z</button>
   </div>

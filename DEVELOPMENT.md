@@ -228,8 +228,20 @@ Accept All. Cluster Small merges small open-bordered fills.
 - **Rubber sheet is ~3× the cost** of a trapped-ball flat (3.5s vs 1.1s at 5.6MP,
   5.9s at 8MP) and is off by default for that reason.
 - Most validation is **headless** (see Testing); the app itself has since been
-  driven in-browser. The **GPU path and PSD-in-Photoshop remain unverified**, as
-  do the Safari-specific open fixes (checked only in Chromium).
+  driven in-browser. **PSD-in-Photoshop remains unverified**, as do the
+  Safari-specific open fixes (checked only in Chromium).
+- **The GPU path was silently corrupting every large flat** and is now fixed.
+  `labA` was created without `COPY_SRC`, but with an even `BATCH` the ping-pong
+  always ends on `labA`, so the final `copyBufferToBuffer` was a validation
+  error — which WebGPU reports on the error scope instead of throwing, so
+  `grow()` returned a zero-filled buffer and the `catch`-to-CPU never fired.
+  `labelPockets` then "repaired" the zeroed core by flooding every free area
+  into one region, which is why it looked like a plausible 142-fill result with
+  one 5.3MP region rather than an obvious crash. It only bit at >2MP with
+  WebGPU present, and the rubber sheet returns before the GPU branch, which is
+  why sag mode looked fine while the default path did not. `grow()` now rejects
+  an empty result so the fallback works, and `useGpu` is part of `segKey` so
+  toggling it actually re-segments.
 
 ## Testing
 
@@ -424,6 +436,28 @@ In [psd.ts](src/core/psd.ts) a group index is part of the layer key, so the expo
 mode applies *within* each folder: the same colour in two groups stays two
 layers. Colour folders are used only when no user groups exist, so folders never
 nest two deep.
+
+### 3c. Remembered edits, and picking them ([main.ts](src/main.ts) `replayEdits`)
+
+Three manual edits are stored as **the geometry the user drew** rather than as
+the region ids they hit, so a re-flat — which renumbers everything — can replay
+the intent instead of losing it. `Group` already did this; draw-merge and
+delete-fill now do too (`MergeStroke`, `DeleteMark` in [state.ts](src/state.ts)).
+
+`replayEdits()` runs after every flat, in a fixed order: merges first (they
+decide which roots exist), then deletions, then group membership. Deletion is
+rebuilt from scratch each time rather than carried across, which is what makes
+*removing* a marker genuinely un-delete.
+
+The ⬚ picker selects them — individually, Shift to add, or by dragging a box
+(`onBox` in [canvasView.ts](src/ui/canvasView.ts); a drag that barely moves
+falls through to `onClick`, so click and box-drag share one gesture). A group's
+interior counts as a hit but scores just worse than any line, so a merge stroke
+drawn inside a lasso is still what you pick when you click it.
+
+Removal is asymmetric, and honestly so: dropping a ✖ or a lasso re-derives
+instantly, but a merge has already collapsed two regions and there is no record
+of the boundary, so it sets the dirty flag and asks for a Re-Flat.
 
 ### 4. Colour-grouped panel ([main.ts](src/main.ts) `rebuildPanel`)
 

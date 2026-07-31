@@ -16,6 +16,13 @@ export interface Region {
 // survive re-flatting.
 export interface Group { id: number; name: string; path: number[] }
 
+// Draw-merge and delete-fill, kept for the same reason a Group keeps its lasso:
+// stored as WHERE THE USER DREW rather than as which region ids it affected, so
+// a re-flat can replay the intent against the renumbered regions instead of
+// losing it. All three are replayed together by replayEdits() in main.ts.
+export interface MergeStroke { id: number; pts: number[] }
+export interface DeleteMark { id: number; x: number; y: number }
+
 export interface Stroke { pts: number[]; mode: 'draw' | 'erase' }
 
 export class Doc {
@@ -33,6 +40,9 @@ export class Doc {
   sagMax = 0                    // what 255 means, in px
   groups: Group[] = []
   nextGroup = 1
+  mergeStrokes: MergeStroke[] = []
+  deleteMarks: DeleteMark[] = []
+  nextEdit = 1
 
   root(id: number): number {
     while (this.regions[id] && this.regions[id].parent !== id) id = this.regions[id].parent
