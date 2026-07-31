@@ -27,18 +27,24 @@ export class CanvasView {
   private lx = 0
   private ly = 0
   private moved = false
+  private autoFit = true // keep re-fitting on resize until the user zooms/pans
 
   constructor(public canvas: HTMLCanvasElement) {
     this.ctx = canvas.getContext('2d')!
     const resize = () => {
       canvas.width = canvas.clientWidth * devicePixelRatio
       canvas.height = canvas.clientHeight * devicePixelRatio
-      this.render()
+      // A canvas starts at 300x150 and ResizeObserver fires asynchronously, so
+      // an image opened before the first callback would be fitted to that
+      // placeholder size and render as a stamp in the corner. Re-fit until the
+      // user has actually zoomed or panned.
+      if (this.autoFit) this.fit(); else this.render()
     }
     new ResizeObserver(resize).observe(canvas)
 
     canvas.addEventListener('wheel', e => {
       e.preventDefault()
+      this.autoFit = false
       const f = Math.exp(-e.deltaY * 0.0015)
       const ns = Math.min(32, Math.max(0.03, this.scale * f))
       const r = canvas.getBoundingClientRect()
@@ -64,6 +70,7 @@ export class CanvasView {
       const dx = e.clientX - this.lx, dy = e.clientY - this.ly
       if (Math.abs(dx) + Math.abs(dy) > 2) this.moved = true
       if (this.panning) {
+        this.autoFit = false
         this.ox += dx * devicePixelRatio
         this.oy += dy * devicePixelRatio
         this.lx = e.clientX; this.ly = e.clientY
@@ -98,6 +105,7 @@ export class CanvasView {
   }
 
   fit() {
+    this.autoFit = true
     if (!this.imgW) return
     const s = Math.min(this.canvas.width / this.imgW, this.canvas.height / this.imgH) * 0.95
     this.scale = s

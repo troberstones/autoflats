@@ -85,7 +85,9 @@
     <label class="s"><input type="checkbox" id="cLines"> Show extracted lines</label>
     <button id="bUndo" disabled>Undo ⌘Z</button>
   </div>
-  <input type="file" id="file" accept="image/*" hidden>
+  <!-- visually hidden rather than display:none: Safari will not open the file
+       picker for a hidden input when .click() is called from script -->
+  <input type="file" id="file" accept="image/*" style="position:fixed;left:-9999px;width:1px;height:1px;opacity:0">
   <script type="module" src="/src/main.ts"></script>
 </body>
 </html>

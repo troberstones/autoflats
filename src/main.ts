@@ -8,7 +8,16 @@ const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getEleme
 
 const doc = new Doc()
 const view = new CanvasView($<HTMLCanvasElement>('view'))
-let worker = new Worker(new URL('./worker.ts', import.meta.url), { type: 'module' })
+// Created lazily, NOT at module scope: if the browser can't start a module
+// worker, a throw here would abort the whole module and leave every button
+// dead (which reads as "the app does nothing"). Deferring it keeps the UI
+// alive and confines the failure to flatting, with a message that says so.
+let _worker: Worker | null = null
+const newWorker = () => new Worker(new URL('./worker.ts', import.meta.url), { type: 'module' })
+function worker(): Worker {
+  if (!_worker) _worker = newWorker()
+  return _worker
+}
 const undoStack: UndoOp[] = []
 let strokesVersion = 0
 
@@ -17,8 +26,8 @@ let strokesVersion = 0
 // parameters changed, so those caches were stale anyway.)
 function cancelWork() {
   if (!busy) return
-  worker.terminate()
-  worker = new Worker(new URL('./worker.ts', import.meta.url), { type: 'module' })
+  _worker?.terminate()
+  _worker = null
   setBusy(false)
 }
 let busy = false
@@ -216,6 +225,16 @@ const fmtArea = (a: number) => a > 1e6 ? (a / 1e6).toFixed(1) + 'M' : a > 1000 ?
 function runFlat(matchOld: boolean) {
   if (!doc.ink) return
   cancelWork() // a newer request supersedes any running one
+  let w: Worker
+  try {
+    w = worker()
+  } catch (e) {
+    // image is loaded and viewable; only the off-thread stages are lost
+    console.error('worker unavailable', e)
+    status('Image loaded, but flatting needs module Worker support (Safari 15+)')
+    return
+  }
+  void w
   setBusy(true)
   status('Flatting…', true)
   const line = currentLineMask()
@@ -224,7 +243,7 @@ function runFlat(matchOld: boolean) {
   const oldRegions = matchOld ? doc.regions : null
   const oldLut = matchOld && doc.labels ? doc.rootLut() : null
   const prev = { core: doc.core, labels: doc.labels, regions: doc.regions.slice() }
-  worker.onmessage = ev => {
+  worker().onmessage = ev => {
     const m = ev.data
     if (m.token !== tk) return
     if (m.t === 'flat') {
@@ -260,7 +279,7 @@ function runFlat(matchOld: boolean) {
   }
   const ink = doc.ink!.slice()
   const p = params()
-  worker.postMessage({
+  worker().postMessage({
     t: 'flat', line: line.buffer, ink: ink.buffer, W: doc.W, H: doc.H,
     maxGap: p.gap, minArea: p.min, sliverW: p.sliver, autoMerge: ($<HTMLInputElement>('cMerge')).checked,
     declutter: p.decl,
@@ -404,7 +423,7 @@ function carveAt(idx: number) {
   const line = currentLineMask()
   const coreCopy = doc.core.slice()
   const prev = { core: doc.core, labels: doc.labels, regions: doc.regions.slice().map(r => r && { ...r }) }
-  worker.onmessage = ev => {
+  worker().onmessage = ev => {
     const m = ev.data
     if (m.token !== tk) return
     setBusy(false)
@@ -420,7 +439,7 @@ function carveAt(idx: number) {
     status('Filled')
   }
   const inkCopy = doc.ink!.slice()
-  worker.postMessage({ t: 'carve', core: coreCopy.buffer, line: line.buffer, ink: inkCopy.buffer, W: doc.W, H: doc.H, idx, r: params().gap, token: tk }, [coreCopy.buffer, line.buffer, inkCopy.buffer])
+  worker().postMessage({ t: 'carve', core: coreCopy.buffer, line: line.buffer, ink: inkCopy.buffer, W: doc.W, H: doc.H, idx, r: params().gap, token: tk }, [coreCopy.buffer, line.buffer, inkCopy.buffer])
 }
 
 view.onStroke = pts => {
@@ -505,13 +524,13 @@ function runPreviewFlat() {
     for (let i = 0; i < line4.length; i++) if (b4[i]) line4[i] = 1
   }
   if (($<HTMLInputElement>('cSkel')).checked) line4 = skeletonize(line4, W4, H4)
-  worker.onmessage = ev => {
+  worker().onmessage = ev => {
     const m = ev.data
     if (m.token !== tk) return
     setBusy(false)
     renderPreview(new Int32Array(m.labels), m.regions, W4, H4)
   }
-  worker.postMessage({
+  worker().postMessage({
     t: 'flat', line: line4.buffer, ink: ink4.buffer, W: W4, H: H4,
     maxGap: Math.max(1, Math.round(p.gap / 4)), minArea: Math.max(4, Math.round(p.min / 16)),
     sliverW: Math.round(p.sliver / 4), autoMerge: ($<HTMLInputElement>('cMerge')).checked,
@@ -586,7 +605,7 @@ function clusterSmall() {
   const line = currentLineMask()
   const isBg = new Uint8Array(doc.regions.length)
   for (const r of doc.roots()) if (r.isBg) isBg[r.id] = 1
-  worker.onmessage = ev => {
+  worker().onmessage = ev => {
     const m = ev.data
     if (m.token !== tk) return
     setBusy(false)
@@ -609,7 +628,7 @@ function clusterSmall() {
     rebuildPanel()
     status(`Clustered ${merged.length} small fill${merged.length > 1 ? 's' : ''}`)
   }
-  worker.postMessage({
+  worker().postMessage({
     t: 'cluster', labels: labels.buffer, line: line.buffer, isBg: isBg.buffer,
     W: doc.W, H: doc.H, maxArea: Math.max(500, params().min * 10), token: tk,
   }, [labels.buffer, line.buffer, isBg.buffer])
@@ -622,7 +641,7 @@ function suggestGapsNow() {
   status('Finding gaps…', true)
   const tk = ++token
   const line = currentLineMask()
-  worker.onmessage = ev => {
+  worker().onmessage = ev => {
     const m = ev.data
     if (m.token !== tk) return
     view.paths = m.paths
@@ -634,7 +653,7 @@ function suggestGapsNow() {
   const labels = doc.labels ? doc.labels.slice() : null
   const ink = doc.ink!.slice()
   const method = ($<HTMLInputElement>('cField')).checked ? 'field' : 'heuristic'
-  worker.postMessage({ t: 'gaps', line: line.buffer, ink: ink.buffer, W: doc.W, H: doc.H, maxGap: params().gap, labels: labels?.buffer ?? null, method, token: tk },
+  worker().postMessage({ t: 'gaps', line: line.buffer, ink: ink.buffer, W: doc.W, H: doc.H, maxGap: params().gap, labels: labels?.buffer ?? null, method, token: tk },
     labels ? [line.buffer, ink.buffer, labels.buffer] : [line.buffer, ink.buffer])
 }
 
@@ -670,15 +689,61 @@ function distToSeg(px: number, py: number, x1: number, y1: number, x2: number, y
 }
 
 // ---------- file open / export ----------
+// Decode to something drawable. Safari only gained createImageBitmap in 15 and
+// still rejects some blobs, so fall back to decoding through an <img>.
+async function decodeImage(f: File): Promise<{ src: CanvasImageSource; w: number; h: number; release(): void }> {
+  if (typeof createImageBitmap === 'function') {
+    try {
+      const b = await createImageBitmap(f)
+      return { src: b, w: b.width, h: b.height, release: () => b.close?.() }
+    } catch { /* fall through to the <img> path */ }
+  }
+  const url = URL.createObjectURL(f)
+  try {
+    const img = new Image()
+    await new Promise<void>((res, rej) => {
+      img.onload = () => res()
+      img.onerror = () => rej(new Error(`the browser could not decode "${f.name}"`))
+      img.src = url
+    })
+    return { src: img, w: img.naturalWidth, h: img.naturalHeight, release: () => URL.revokeObjectURL(url) }
+  } catch (e) {
+    URL.revokeObjectURL(url)
+    throw e
+  }
+}
+
 async function openFile(f: File) {
-  const bmp = await createImageBitmap(f)
-  doc.W = bmp.width; doc.H = bmp.height
+  try {
+    await loadFile(f)
+  } catch (e: any) {
+    setBusy(false)
+    status('Could not open: ' + (e?.message ?? e))
+    console.error('openFile failed', e)
+  }
+}
+
+async function loadFile(f: File) {
+  status('Opening…', true)
+  const img = await decodeImage(f)
+  if (!img.w || !img.h) throw new Error(`"${f.name}" has no image data`)
+  doc.W = img.w; doc.H = img.h
   doc.name = f.name.replace(/\.[^.]+$/, '')
   doc.src = document.createElement('canvas')
   doc.src.width = doc.W; doc.src.height = doc.H
-  const sctx = doc.src.getContext('2d')!
-  sctx.drawImage(bmp, 0, 0)
-  doc.ink = extractInk(sctx.getImageData(0, 0, doc.W, doc.H), params().sat)
+  const sctx = doc.src.getContext('2d')
+  if (!sctx) throw new Error('could not get a 2D canvas context')
+  sctx.drawImage(img.src, 0, 0)
+  img.release()
+  // Safari caps canvas area (~16.7MP on iOS); over it getImageData yields blank
+  // or throws, so say so plainly instead of flatting an empty image.
+  let pixels: ImageData
+  try {
+    pixels = sctx.getImageData(0, 0, doc.W, doc.H)
+  } catch {
+    throw new Error(`${doc.W}×${doc.H} is too large for this browser's canvas — try a smaller image`)
+  }
+  doc.ink = extractInk(pixels, params().sat)
   doc.core = doc.labels = null
   doc.regions = []
   doc.strokes = []
@@ -837,6 +902,14 @@ $('cLines').onchange = () => { view.showLines = ($<HTMLInputElement>('cLines')).
 // drag & drop
 addEventListener('dragover', e => e.preventDefault())
 addEventListener('drop', e => { e.preventDefault(); const f = e.dataTransfer?.files?.[0]; if (f) openFile(f) })
+
+// Never fail silently: an uncaught error used to leave the UI looking idle
+// (a click that "does nothing"), with the reason only in the dev console.
+addEventListener('error', e => { setBusy(false); status('Error: ' + (e.message || e.error)) })
+addEventListener('unhandledrejection', e => {
+  setBusy(false)
+  status('Error: ' + ((e.reason as any)?.message ?? e.reason))
+})
 
 setTool('pan')
 if ((navigator as any).gpu) $('lGpu').hidden = false
