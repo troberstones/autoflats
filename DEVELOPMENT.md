@@ -267,6 +267,24 @@ Touching clutter regions merge with each other first, so a hatched patch
 collapses as a unit and then attaches to its host. The Declutter slider (0–100,
 default 50) scales all three thresholds.
 
+**Never merge across a contour.** Deciding *what* a fill may merge into matters
+as much as which fills are clutter. Growth stops at the medial axis of the
+stroke between two regions, so the distance to the nearest non-line pixel at a
+shared boundary *is* that stroke's half-width. Each boundary is classified:
+
+- **open** (no stroke — an arbitrary cut through free space) → safe, weighted ×20
+- **thin** (< `STRONG_PX` = 2px half-width — a hatch/detail mark) → safe, this is the point
+- **strong** (a drawn contour) → **forbidden**
+
+A merge needs some open/thin contact and is vetoed if >40% of the boundary is
+strong; a patch with no acceptable host is left alone, because it is a real
+enclosed area. The first version omitted this and merged into whichever
+neighbour shared the longest boundary, which let a fill invade straight across a
+drawn line. Measured with a detector for "same region on both sides of a thick
+ink ridge", that regression roughly doubled contour swallowing (Lineart6
+10.4% → 21.0%); with the rule it returns to within 1–2 points of the
+no-declutter baseline (12.5%) while still cutting fills ~40%.
+
 Effect at full strength: 615→205, 394→99, 528→240 fills. Max non-bg fill moves
 only 4.3%→4.6% and background is unchanged — i.e. it removes fragments without
 ballooning or leaking anything. Costs ~200–650ms.

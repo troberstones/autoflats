@@ -22,6 +22,17 @@ import { distanceTransform } from './morphology.ts'
 // shade. Touching clutter regions merge with each other first, so a whole
 // hatched patch collapses as one unit and then attaches to its host.
 
+// Stroke half-width (px) at or above which a boundary counts as a contour --
+// a drawn edge between two areas -- rather than a hatch/detail mark. Fills must
+// never merge across one.
+const STRONG_PX = 2
+
+const invLine = (line: Uint8Array, N: number) => {
+  const inv = new Uint8Array(N)
+  for (let i = 0; i < N; i++) inv[i] = line[i] ? 0 : 1
+  return inv
+}
+
 export interface DeclutterOpts { maxArea: number; maxMeanD: number; minDensity: number }
 
 // strength 0..100 -> thresholds. 0 disables the pass entirely.
@@ -85,20 +96,40 @@ export function declutter(core: Int32Array, labels: Int32Array, line: Uint8Array
   }
   if (!any) return false
 
-  // shared boundary lengths between adjacent regions
-  const nbr = new Map<number, Map<number, number>>()
-  const bump = (a: number, b: number) => {
+  // Shared boundaries, classified by WHAT separates the two regions. Growth
+  // stops at the medial axis of the separating stroke, so the distance to the
+  // nearest non-line pixel at a boundary is that stroke's half-width:
+  //   open   - no stroke at all (an arbitrary cut through free space)
+  //   thin   - a hatch/detail mark; absorbing it is the whole point
+  //   strong - a contour. Merging across one lets a fill invade the area on the
+  //            other side of a drawn line, which is never right.
+  const wd = distanceTransform(invLine(line, N), W, H)
+  interface B { total: number; open: number; thin: number; strong: number }
+  const nbr = new Map<number, Map<number, B>>()
+  const bump = (a: number, b: number, cls: 0 | 1 | 2) => {
     let m = nbr.get(a)
     if (!m) nbr.set(a, (m = new Map()))
-    m.set(b, (m.get(b) ?? 0) + 1)
+    let e = m.get(b)
+    if (!e) m.set(b, (e = { total: 0, open: 0, thin: 0, strong: 0 }))
+    e.total++
+    if (cls === 0) e.open++; else if (cls === 1) e.thin++; else e.strong++
+  }
+  const OPEN = 7 // chamfer units: > ~2.3px from any line
+  const classify = (i: number, q: number): 0 | 1 | 2 => {
+    if (ld[i] > OPEN && ld[q] > OPEN) return 0
+    return Math.max(wd[i], wd[q]) / 3 >= STRONG_PX ? 2 : 1
   }
   for (let y = 0; y < H; y++) {
     for (let x = 0; x < W; x++) {
       const i = y * W + x, a = labels[i]
-      if (x < W - 1) { const b = labels[i + 1]; if (a !== b) { bump(a, b); bump(b, a) } }
-      if (y < H - 1) { const b = labels[i + W]; if (a !== b) { bump(a, b); bump(b, a) } }
+      if (x < W - 1) { const b = labels[i + 1]; if (a !== b) { const c = classify(i, i + 1); bump(a, b, c); bump(b, a, c) } }
+      if (y < H - 1) { const b = labels[i + W]; if (a !== b) { const c = classify(i, i + W); bump(a, b, c); bump(b, a, c) } }
     }
   }
+  // A merge may not cross a predominantly-contour boundary, and needs some
+  // genuine open/thin contact to justify it. Open contact counts far more.
+  const allowed = (e: B) => e.strong <= 0.4 * e.total && e.open + e.thin > 0
+  const score = (e: B) => e.open * 20 + e.thin
 
   const parent = new Int32Array(maxId + 1)
   for (let i = 0; i <= maxId; i++) parent[i] = i
@@ -106,30 +137,35 @@ export function declutter(core: Int32Array, labels: Int32Array, line: Uint8Array
   const union = (a: number, b: number) => { const ra = find(a), rb = find(b); if (ra !== rb) parent[ra] = rb }
 
   // pass 1: a hatched patch is many touching clutter cells -- collapse it first
+  // (but never across a contour: two cells either side of a drawn edge are two
+  // different areas, however cluttered the neighbourhood is)
   for (const [a, m] of nbr) {
     if (!clutter[a]) continue
-    for (const b of m.keys()) if (b && clutter[b]) union(a, b)
+    for (const [b, e] of m) if (b && clutter[b] && allowed(e)) union(a, b)
   }
-  // pass 2: attach each collapsed patch to the real area it shades (longest
-  // shared boundary; background only as a last resort)
-  const tally = new Map<number, Map<number, number>>()
+  // pass 2: attach each collapsed patch to the real area it shades
+  const tally = new Map<number, Map<number, B>>()
   for (const [a, m] of nbr) {
     if (!a || !clutter[a]) continue
     const ra = find(a)
     let t = tally.get(ra)
     if (!t) tally.set(ra, (t = new Map()))
-    for (const [b, w] of m) {
+    for (const [b, e] of m) {
       if (!b || clutter[b] || find(b) === ra) continue
-      t.set(find(b), (t.get(find(b)) ?? 0) + w)
+      const rb = find(b)
+      let acc = t.get(rb)
+      if (!acc) t.set(rb, (acc = { total: 0, open: 0, thin: 0, strong: 0 }))
+      acc.total += e.total; acc.open += e.open; acc.thin += e.thin; acc.strong += e.strong
     }
   }
   for (const [ra, t] of tally) {
-    let best = 0, bw = -1
-    for (const [b, w] of t) {
-      const bgPenalty = isBg && b < isBg.length && isBg[b] ? 0.05 : 1
-      const score = w * bgPenalty
-      if (score > bw) { bw = score; best = b }
+    let best = 0, bw = 0
+    for (const [b, e] of t) {
+      if (!allowed(e)) continue // would cross a drawn line
+      const s = score(e) * (isBg && b < isBg.length && isBg[b] ? 0.05 : 1)
+      if (s > bw) { bw = s; best = b }
     }
+    // no acceptable host: this is a real enclosed area, so leave it alone
     if (best) union(ra, best)
   }
 
