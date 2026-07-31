@@ -39,6 +39,10 @@ const setDirty = (d: boolean) => {
   $('badge').style.display = d && doc.labels ? '' : 'none'
   if (d) scheduleAutoFlat()
 }
+// Auto-bridge rounds since the last explicit user action; bounded so a
+// bridge -> re-flat -> new suggestion cycle always terminates.
+let autoBridgeRounds = 0
+const resetAutoBridge = () => { autoBridgeRounds = 0 }
 let autoTimer = 0
 function scheduleAutoFlat(delay = 600) {
   clearTimeout(autoTimer)
@@ -191,6 +195,16 @@ function runFlat(matchOld: boolean) {
       afterModelChange()
       status(`${m.regions.length} fills` + (view.paths.length ? ` · ${view.paths.length} suggested gaps — Tab to review, click or Enter to bridge` : ''))
       setBusy(false)
+      // Auto-bridge: every suggestion has already been proven to close a fill
+      // (closure test in closure.ts), so accepting them is safe. Bounded rounds
+      // — bridging changes segmentation, which can surface further gaps.
+      if (($<HTMLInputElement>('cBridge')).checked && view.paths.length && autoBridgeRounds < 3) {
+        autoBridgeRounds++
+        const n = view.paths.length
+        while (view.paths.length) acceptSeg(0)
+        status(`${m.regions.length} fills · auto-bridged ${n} gap${n > 1 ? 's' : ''}, re-flatting…`, true)
+        runFlat(true)
+      }
     }
   }
   const ink = doc.ink!.slice()
@@ -562,6 +576,7 @@ async function openFile(f: File) {
   doc.strokes = []
   doc.barrierMask = new Uint8Array(doc.W * doc.H)
   undoStack.length = 0
+  resetAutoBridge()
   view.paths = []
   fillsCv = document.createElement('canvas'); fillsCv.width = doc.W; fillsCv.height = doc.H
   fillsCtx = fillsCv.getContext('2d')!
@@ -610,8 +625,8 @@ async function doExport() {
 // ---------- wiring ----------
 $('bOpen').onclick = () => $<HTMLInputElement>('file').click()
 $<HTMLInputElement>('file').onchange = e => { const f = (e.target as HTMLInputElement).files?.[0]; if (f) openFile(f) }
-$('bFlat').onclick = () => runFlat(false)
-$('bReflat').onclick = () => runFlat(true)
+$('bFlat').onclick = () => { resetAutoBridge(); runFlat(false) }
+$('bReflat').onclick = () => { resetAutoBridge(); runFlat(true) }
 $('bCluster').onclick = clusterSmall
 $('bGaps').onclick = suggestGapsNow
 $('bAcceptAll').onclick = () => {
@@ -691,8 +706,8 @@ const schedulePreview = () => {
     rebuildLineCanvas()
   }, 150)
 }
-for (const id of ['sThr', 'sSat', 'sSm']) $(id).oninput = () => { sliderLive(); setDirty(true); schedulePreview(); scheduleQuickFlat() }
-for (const id of ['sGap', 'sMin', 'sSliv']) $(id).oninput = () => { sliderLive(); setDirty(true); scheduleQuickFlat() }
+for (const id of ['sThr', 'sSat', 'sSm']) $(id).oninput = () => { resetAutoBridge(); sliderLive(); setDirty(true); schedulePreview(); scheduleQuickFlat() }
+for (const id of ['sGap', 'sMin', 'sSliv']) $(id).oninput = () => { resetAutoBridge(); sliderLive(); setDirty(true); scheduleQuickFlat() }
 $('cMerge').onchange = () => { setDirty(true); scheduleQuickFlat() }
 $('cSkel').onchange = () => { if (doc.src) rebuildLineCanvas(); setDirty(true); scheduleQuickFlat() }
 $('cAuto').onchange = () => { if (dirty) scheduleAutoFlat(0) }

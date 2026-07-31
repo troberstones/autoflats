@@ -43,6 +43,7 @@ src/
     flow.ts           stroke-orientation field (structure tensor at 1/4 res)
     relatability.ts   Kellman-Shipley relatability gate + Euler elastica energy/shape
     completionField.ts stochastic completion field (Williams & Jacobs): u*v closure
+    closure.ts        region-level closure test + Praegnanz (minimal bridge set)
     curves.ts         curved (Hermite) + co-completion (parallel-partner) bridge shapes
     gaps.ts           skeleton-endpoint gap suggestions (fallback source)
     gpuGrow.ts        WebGPU chamfer-relaxation growth (optional, self-falling-back)
@@ -102,6 +103,8 @@ mapping from gestalt principle to computation:
 | Closure | **product** of forward × backward fields (`C = u·v`) | [completionField.ts](src/core/completionField.ts) |
 | Similarity | stroke-width matching at anchors | [fronts.ts](src/core/fronts.ts), [gaps.ts](src/core/gaps.ts) |
 | Parallelism | co-completion from a partner stroke; field superposition | [curves.ts](src/core/curves.ts) |
+| Closure (regions) | bridge must split a fill into two real parts | [closure.ts](src/core/closure.ts) |
+| **Prägnanz** | fewest completions achieving those closures | [closure.ts](src/core/closure.ts) |
 
 **Relatability** is the gate: it replaced a pair of one-sided collinearity
 dot-checks that admitted S-curves (inflected links human vision never
@@ -142,6 +145,27 @@ remain the primary suggestion source.
 *Not done:* a WGSL kernel for the field. The sparse active-cell layout does not
 map cleanly onto a dense GPU grid, and ~1.1s at 5.6MP is acceptable for an
 explicit action. Revisit only if the field becomes a live/auto stage.
+
+**Closure + Prägnanz** ([closure.ts](src/core/closure.ts)) is the final filter, applied
+to *every* suggestion source in [worker.ts](src/worker.ts) (`closeAndPrune`). Two local
+flood tests per candidate, best-first:
+
+1. **Prägnanz** — with barriers = line + already-accepted bridges (candidate
+   excluded), are the two sides still connected? If not, an earlier bridge
+   already closed this leak and the candidate is redundant. Dropped.
+2. **Closure** — now add the candidate as a wall. Both sides must be genuinely
+   separated and each ≥ `MIN_SPLIT` (150px²). The smaller side is the *gain*.
+
+This cuts suggestions 65-80% (e.g. 110 → 30 on Lineart4) in 4-21ms, and every
+survivor provably closes a fill. Because they are pre-vetted, **Auto-bridge gaps**
+can accept them automatically after each flat; the loop is capped at 3 rounds
+(bridging changes segmentation, which can surface new gaps) and the counter
+resets on any explicit user action. Measured convergence is 1-2 rounds on all
+six samples, with background and max-fill percentages unchanged.
+
+**Note:** bridging *raises* region count slightly (e.g. 615 → 622), because
+closing a leak correctly splits one region into two. Gap closing and layer
+reduction pull in opposite directions — see the open problem below.
 
 ## Data model ([state.ts](src/state.ts))
 

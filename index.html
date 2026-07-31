@@ -68,6 +68,7 @@
     <label class="s" title="Merge fill fragments whose shared border crosses open space against the stroke flow"><input type="checkbox" id="cMerge" checked> Auto-merge leaks</label>
     <label class="s" title="Rank gap bridges by a stochastic completion field (Williams &amp; Jacobs): tips link only where the field diffuses a smooth connecting contour between them. Used by Suggest Gaps."><input type="checkbox" id="cField"> Completion field</label>
     <label class="s" title="Re-flat automatically after tuning a parameter"><input type="checkbox" id="cAuto"> Auto re-flat</label>
+    <label class="s" title="Automatically bridge suggested gaps after flatting. Each suggestion is already proven to close a fill, so this is safe to leave on; ⌘Z undoes a round."><input type="checkbox" id="cBridge"> Auto-bridge gaps</label>
     <label class="s" id="lGpu" title="Run the growth stages on the GPU (WebGPU); falls back to CPU automatically" hidden><input type="checkbox" id="cGpu" checked> GPU</label>
     <label class="s">Line opacity <input type="range" id="sOp" min="0" max="100" value="100"></label>
     <label class="s"><input type="checkbox" id="cLines"> Show extracted lines</label>

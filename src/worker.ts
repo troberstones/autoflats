@@ -4,6 +4,7 @@ import { expandLabels } from './core/expand.ts'
 import { finalizeRegions, type RegionInfo } from './core/regions.ts'
 import { suggestGaps, strokeEndpoints } from './core/gaps.ts'
 import { completionField, fieldBridges } from './core/completionField.ts'
+import { selectBridges } from './core/closure.ts'
 import { distanceTransform } from './core/morphology.ts'
 import { flowField } from './core/flow.ts'
 import { analyzeFronts } from './core/fronts.ts'
@@ -20,6 +21,15 @@ function toPaths(segs: number[], flow: Flow | null, line: Uint8Array, W: number,
       ?? curveBridge(segs[i], segs[i + 1], segs[i + 2], segs[i + 3], flow))
   }
   return paths
+}
+
+// Gestalt closure + Praegnanz: keep only bridges that actually split a fill,
+// and only the fewest needed -- candidates arrive best-first, so a bridge whose
+// sides an earlier one already separated is dropped as redundant.
+function closeAndPrune(paths: number[][], labels: Int32Array | null, line: Uint8Array, W: number, H: number): number[][] {
+  if (!labels) return paths
+  const { keep } = selectBridges(paths, labels, line, W, H)
+  return keep.map(i => paths[i])
 }
 
 // Stage caches: raw segmentation is the expensive stage; postprocess-only
@@ -77,7 +87,8 @@ onmessage = async (e: MessageEvent) => {
       // fronts changed after merging: recompute suggestions on the final labels
       res = analyzeFronts(labels, line, m.W, m.H, flow, maxBridge, bgLut(regions), false)
     }
-    postMessage({ t: 'flat', core: core.buffer, labels: labels.buffer, regions, paths: toPaths(res.segs, flow, line, m.W, m.H), token: m.token },
+    const paths = closeAndPrune(toPaths(res.segs, flow, line, m.W, m.H), labels, line, m.W, m.H)
+    postMessage({ t: 'flat', core: core.buffer, labels: labels.buffer, regions, paths, token: m.token },
       { transfer: [core.buffer, labels.buffer] })
   } else if (m.t === 'carve') {
     const res = carve(new Int32Array(m.core), new Uint8Array(m.line), m.W, m.H, m.idx, m.r, m.ink ? new Uint8Array(m.ink) : null)
@@ -142,7 +153,8 @@ onmessage = async (e: MessageEvent) => {
       }
       if (!dup) segs.push(eps[i], eps[i + 1], eps[i + 2], eps[i + 3])
     }
-    postMessage({ t: 'gaps', paths: toPaths(segs.slice(0, 200 * 4), flow, line, m.W, m.H), token: m.token })
+    const paths = closeAndPrune(toPaths(segs.slice(0, 200 * 4), flow, line, m.W, m.H), labels, line, m.W, m.H)
+    postMessage({ t: 'gaps', paths, token: m.token })
   }
 }
 
