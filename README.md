@@ -9,6 +9,23 @@ npm install
 npm run dev     # open http://localhost:5173
 ```
 
+To host it anywhere else, **build first and serve `dist/`**:
+
+```
+npm run build
+python3 -m http.server 8010 --directory dist
+```
+
+> **A plain static server pointed at the source directory will not work.**
+> `index.html` loads `/src/main.ts`, and browsers cannot execute TypeScript —
+> Python's `http.server` even labels `.ts` as `video/mp2t`, so the module is
+> rejected outright. The page renders but no button does anything, because the
+> script never ran. `npm run dev` compiles on the fly; `npm run build` compiles
+> ahead of time. Either is fine; serving the raw sources is not.
+
+Everything runs client-side, so `dist/` is a static bundle you can host as-is.
+Needs a browser with module workers (Safari 15+, Chrome 80+, Firefox 114+).
+
 ## Use
 
 1. **Open…** (or drag-drop) a line-art PNG. It auto-flats on load.
