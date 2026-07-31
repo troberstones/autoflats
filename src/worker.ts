@@ -38,8 +38,23 @@ function closeAndPrune(paths: number[][], labels: Int32Array | null, line: Uint8
 // parameter changes (min region, sliver, auto-merge) reuse it. The flow field
 // only depends on the ink. Keys are opaque strings built by the main thread.
 // two slots so full-res and quarter-res preview runs don't evict each other
-const segCache = new Map<string, { core: Int32Array; labels: Int32Array }>()
+const segCache = new Map<string, { core: Int32Array; labels: Int32Array; sag?: { data: Uint8Array; max: number } }>()
 let flowCache: { key: string; flow: ReturnType<typeof flowField> } | null = null
+
+// Sag in px -> a byte per pixel for display, on a log ramp. Roominess spans
+// orders of magnitude in one drawing -- open background sags 600px while the
+// inside of a sleeve sags 15 -- so a linear ramp (or even a square root) paints
+// every figure the same near-black and the interior, which is the part worth
+// looking at, carries no contrast at all. `max` goes back with it so the scale
+// can still be read in pixels.
+function sagView(sag: Float32Array): { data: Uint8Array; max: number } {
+  let max = 0
+  for (const v of sag) if (v > max) max = v
+  const data = new Uint8Array(sag.length)
+  const k = 255 / Math.log1p(max)
+  if (max > 0) for (let i = 0; i < sag.length; i++) data[i] = k * Math.log1p(sag[i])
+  return { data, max }
+}
 
 // GPU growth: lazy init; any failure permanently falls back to CPU
 let gpu: GpuGrower | null | undefined // undefined = not tried yet
@@ -48,8 +63,8 @@ async function segment(line: Uint8Array, ink: Uint8Array, W: number, H: number, 
   // Rubber sheet: one membrane solve replaces the whole radius ladder, and the
   // regions come out of the field's topology rather than out of flood order.
   if (sagTau > 0) {
-    const { core } = sagSegment(line, W, H, sagTau, maxGap)
-    return { core, labels: expandLabels(core, W, H, ink) }
+    const { core, sag } = sagSegment(line, W, H, sagTau, maxGap)
+    return { core, labels: expandLabels(core, W, H, ink), sag: sagView(sag) }
   }
   if (useGpu && gpu === undefined) gpu = await GpuGrower.create()
   if (useGpu && gpu) {
@@ -72,15 +87,16 @@ onmessage = async (e: MessageEvent) => {
   if (m.t === 'flat') {
     const line = new Uint8Array(m.line)
     const ink = new Uint8Array(m.ink)
-    let core: Int32Array, labels: Int32Array
+    let core: Int32Array, labels: Int32Array, sag: { data: Uint8Array; max: number } | undefined
     const hit = segCache.get(m.segKey)
     if (hit) {
       core = hit.core.slice()
       labels = hit.labels.slice()
+      sag = hit.sag
     } else {
-      ;({ core, labels } = await segment(line, ink, m.W, m.H, m.maxGap,
+      ;({ core, labels, sag } = await segment(line, ink, m.W, m.H, m.maxGap,
         !!m.useGpu && m.W * m.H > 2e6, m.sagTau ?? 0))
-      segCache.set(m.segKey, { core: core.slice(), labels: labels.slice() })
+      segCache.set(m.segKey, { core: core.slice(), labels: labels.slice(), sag })
       for (const k of segCache.keys()) { if (segCache.size <= 2) break; segCache.delete(k) }
     }
     let { regions } = finalizeRegions(core, labels, m.W, m.H, m.minArea)
@@ -102,8 +118,11 @@ onmessage = async (e: MessageEvent) => {
       res = analyzeFronts(labels, line, m.W, m.H, flow, maxBridge, bgLut(regions), false)
     }
     const paths = closeAndPrune(toPaths(res.segs, flow, line, m.W, m.H), labels, line, m.W, m.H)
-    postMessage({ t: 'flat', core: core.buffer, labels: labels.buffer, regions, paths, token: m.token },
-      { transfer: [core.buffer, labels.buffer] })
+    // the sag field is cached, so hand out a copy rather than transferring it
+    const sagOut = sag ? sag.data.slice() : null
+    postMessage({ t: 'flat', core: core.buffer, labels: labels.buffer, regions, paths,
+      sag: sagOut?.buffer ?? null, sagMax: sag?.max ?? 0, token: m.token },
+      { transfer: sagOut ? [core.buffer, labels.buffer, sagOut.buffer] : [core.buffer, labels.buffer] })
   } else if (m.t === 'carve') {
     const res = carve(new Int32Array(m.core), new Uint8Array(m.line), m.W, m.H, m.idx, m.r, m.ink ? new Uint8Array(m.ink) : null)
     if (!res) { postMessage({ t: 'carve', ok: false, token: m.token }); return }

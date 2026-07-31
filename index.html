@@ -34,6 +34,8 @@
   .tw { width: 10px; color: #999; font-size: 9px; user-select: none; }
   #status { margin-left: auto; color: #999; }
   #badge { color: #ffa030; display: none; }
+  .hint { color: #888; font-size: 11px; }
+  label.s.off { opacity: .45; }
   .spin { color: #6cf; }
 </style>
 </head>
@@ -86,6 +88,8 @@
     <label class="s" id="lGpu" title="Run the growth stages on the GPU (WebGPU); falls back to CPU automatically" hidden><input type="checkbox" id="cGpu" checked> GPU</label>
     <label class="s">Line opacity <input type="range" id="sOp" min="0" max="100" value="100"></label>
     <label class="s"><input type="checkbox" id="cLines"> Show extracted lines</label>
+    <label class="s" id="lSagView" title="Show the rubber sheet itself: black where it is pinned to the ink, brightening as it sags. Needs the Rubber sheet slider to be up."><input type="checkbox" id="cSagView"> Sag field <span id="vSagView" class="hint"></span></label>
+    <label class="s" title="Outline the watershed ridges between fills. White where the ridge lies on ink (the artist drew that boundary); cyan where it crosses blank paper — a gap that got closed with nothing drawn across it."><input type="checkbox" id="cRidge"> Ridges</label>
     <button id="bUndo" disabled>Undo ⌘Z</button>
   </div>
   <!-- visually hidden rather than display:none: Safari will not open the file

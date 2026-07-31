@@ -299,6 +299,37 @@ inside the ⅛-px quantisation (measured max error 0.36px vs a fully converged
 solve). ~3× a trapped-ball flat; cached in `segCache`, so only re-segmentation
 pays it.
 
+### Seeing it ([main.ts](src/main.ts) `rebuildSagCanvas` / `rebuildRidgeCanvas`)
+
+Two overlay checkboxes, both driven from data the pipeline already produced.
+
+**Sag field.** The worker ships the field back as one byte per pixel
+(`sagView`), plus the max in px so the label can name the scale. Two things had
+to be got right before it read as anything:
+
+- *Ramp function.* Roominess spans orders of magnitude in one drawing — 600px of
+  open background against 15px inside a sleeve. Linear paints every figure the
+  same near-black; `sqrt` (on a field that is already a square root) is still
+  not enough. Log is what separates the interior, which is the part worth
+  looking at.
+- *Colour ramp.* A naive black→red→yellow ramp saturates at t=0.5 and discards
+  everything above it — with a log transfer that is most of the picture, and the
+  whole image goes flat orange. Five evenly spaced inferno-ish stops fixed it.
+
+**Ridges** are the watershed lines: boundaries in `labels` after root
+resolution. White where the pixel is in the line mask, cyan where it isn't —
+and the cyan set is exactly the walls that no ink justifies, i.e. the gaps that
+got closed. Cyan because it has to survive the sag ramp, which is warm all the
+way up. Only ~5% of ridge length is open, so it is dilated by a pixel to stay
+visible at fit-to-window zoom. Works with the trapped ball too.
+
+Both rebuild inside `rebuildFills()`, which every structural edit already goes
+through — but a recolour moves no ridges, and a full-res pass plus a line-mask
+rebuild is ~290ms at 5.6MP, felt on every tick of a colour picker. The ridge
+canvas is therefore keyed on the root table plus the line-mask parameters:
+recolour is 40ms, a merge invalidates it (verified: Cluster Small merged 9 fills
+and the canvas changed).
+
 **Deliberately not shipped:** the ridge walk knows every break in the ink that
 two areas touch through, which looks like a free source of gap suggestions. It
 isn't — a boundary this pass keeps is one the fills already respect, so bridging

@@ -29,6 +29,8 @@ export class Doc {
   regions: Region[] = [] // indexed by id (0 unused)
   strokes: Stroke[] = []
   barrierMask: Uint8Array | null = null
+  sag: Uint8Array | null = null // rubber-sheet height, 0..255 (see worker sagView)
+  sagMax = 0                    // what 255 means, in px
   groups: Group[] = []
   nextGroup = 1
 

@@ -11,8 +11,12 @@ export class CanvasView {
   fills: HTMLCanvasElement | null = null
   lineCv: HTMLCanvasElement | null = null
   barrierCv: HTMLCanvasElement | null = null
+  sagCv: HTMLCanvasElement | null = null
+  ridgeCv: HTMLCanvasElement | null = null
   lineOpacity = 1
   showLines = false
+  showSag = false
+  showRidges = false
   showBarriers = true
   paths: number[][] = [] // gap-bridge suggestions, each a polyline [x0,y0,x1,y1,...]
   segFocus = -1
@@ -128,6 +132,15 @@ export class CanvasView {
       ctx.fillStyle = '#fff'
       ctx.fillRect(0, 0, this.imgW, this.imgH)
       if (this.lineCv) ctx.drawImage(this.lineCv, 0, 0)
+    } else if (this.showSag && this.sagCv) {
+      // the height field replaces the fills; the art stays faintly on top so
+      // you can see which valley belongs to what
+      ctx.drawImage(this.sagCv, 0, 0)
+      if (this.lineCv) {
+        ctx.globalAlpha = 0.4 * this.lineOpacity
+        ctx.drawImage(this.lineCv, 0, 0)
+        ctx.globalAlpha = 1
+      }
     } else {
       if (this.fills) ctx.drawImage(this.fills, 0, 0, this.imgW, this.imgH)
       if (this.lineCv) {
@@ -136,6 +149,7 @@ export class CanvasView {
         ctx.globalAlpha = 1
       }
     }
+    if (this.ridgeCv && this.showRidges) ctx.drawImage(this.ridgeCv, 0, 0)
     if (this.barrierCv && this.showBarriers) {
       ctx.globalAlpha = 0.7
       ctx.drawImage(this.barrierCv, 0, 0)

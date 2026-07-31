@@ -87,6 +87,117 @@ function currentLineMask(includeBarriers = true): Uint8Array {
 let fillsCv: HTMLCanvasElement, fillsCtx: CanvasRenderingContext2D, fillsImg: ImageData
 let lineCv: HTMLCanvasElement
 let barrierCv: HTMLCanvasElement, barrierCtx: CanvasRenderingContext2D
+let sagCv: HTMLCanvasElement | null = null, ridgeCv: HTMLCanvasElement | null = null
+
+// pinned -> deepest sag. Roughly inferno: near-black at the ink, through purple
+// and red to pale yellow, with the steps spaced so mid-range values stay apart
+const SAG_RAMP: Array<[number, number, number]> =
+  [[0, 0, 4], [87, 16, 110], [188, 55, 84], [249, 142, 9], [252, 255, 164]]
+
+const layerCanvas = (): HTMLCanvasElement => {
+  const c = document.createElement('canvas')
+  c.width = doc.W; c.height = doc.H
+  return c
+}
+
+// The rubber sheet as a height map: black where the sheet is pinned to the ink,
+// climbing through red and orange to white in the middle of the roomiest areas
+// (the ramp is log — see sagView in the worker). Reading it is the point of the
+// mode: a drawn area is plainly a basin, and a break in a stroke is only a
+// shallow notch between two of them, which is exactly why fills don't pour
+// through one.
+function rebuildSagCanvas() {
+  if (!doc.sag) { sagCv = null; view.sagCv = null; return }
+  const { W, H } = doc
+  const img = new ImageData(W, H)
+  const d = img.data
+  // 256-entry lookup built once per rebuild; a naive red->yellow ramp saturates
+  // halfway up and throws away everything above it, so use evenly-spaced stops
+  const ramp = new Uint8Array(256 * 3)
+  for (let v = 0; v < 256; v++) {
+    const t = (v / 255) * (SAG_RAMP.length - 1)
+    const k = Math.min(SAG_RAMP.length - 2, t | 0), f = t - k
+    for (let c = 0; c < 3; c++) ramp[v * 3 + c] = SAG_RAMP[k][c] + (SAG_RAMP[k + 1][c] - SAG_RAMP[k][c]) * f
+  }
+  for (let i = 0; i < doc.sag.length; i++) {
+    const v = doc.sag[i] * 3, o = i * 4
+    d[o] = ramp[v]; d[o + 1] = ramp[v + 1]; d[o + 2] = ramp[v + 2]; d[o + 3] = 255
+  }
+  sagCv ??= layerCanvas()
+  sagCv.getContext('2d')!.putImageData(img, 0, 0)
+  view.sagCv = sagCv
+}
+
+// Ridges: the watershed lines between fills — the creases the sheet folds along.
+// Two colours, and the distinction is the whole reason to look:
+//   dim white  the ridge is sitting on ink, i.e. the artist drew this boundary;
+//   cyan       the ridge crosses open paper. Nothing is drawn there and the fills
+//              still don't mix — this is a gap the segmenter closed for you.
+// Cyan because it has to stay legible over the sag ramp, which is warm all the
+// way up; anything in the magenta-to-orange range disappears into it. It is also
+// dilated a pixel, since open ridge is only ~5% of the total length and a hairline
+// vanishes when the view is zoomed to fit.
+let ridgeKey = ''
+function rebuildRidgeCanvas() {
+  if (!doc.labels) { ridgeCv = null; view.ridgeCv = null; return }
+  const { W, H } = doc
+  const lut = doc.rootLut()
+  // Recolouring a fill leaves every ridge exactly where it was, and this rebuild
+  // is a full-resolution pass plus a line-mask rebuild — ~290ms at 5.6MP, which
+  // is felt on every tick of a colour picker. Only merges/splits move a ridge,
+  // and those show up in the root table.
+  const p = params()
+  const key = `${lut.join(',')}|${p.thr}|${p.smooth}|${strokesVersion}|${($<HTMLInputElement>('cSkel')).checked}`
+  if (key === ridgeKey && ridgeCv) { view.ridgeCv = ridgeCv; return }
+  ridgeKey = key
+  const line = currentLineMask()
+  const img = new ImageData(W, H)
+  const d = img.data
+  const put = (i: number, open: boolean) => {
+    const o = i * 4
+    if (open) { d[o] = 0; d[o + 1] = 245; d[o + 2] = 255; d[o + 3] = 255 }
+    else if (d[o + 3] < 150) { d[o] = d[o + 1] = d[o + 2] = 255; d[o + 3] = 150 }
+  }
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      const i = y * W + x
+      const a = lut[doc.labels[i]]
+      const right = x < W - 1 && lut[doc.labels[i + 1]] !== a
+      const down = y < H - 1 && lut[doc.labels[i + W]] !== a
+      if (!right && !down) continue
+      if (line[i]) { put(i, false); continue }
+      put(i, true)
+      if (x > 0) put(i - 1, true)
+      if (x < W - 1) put(i + 1, true)
+      if (y > 0) put(i - W, true)
+      if (y < H - 1) put(i + W, true)
+    }
+  }
+  ridgeCv ??= layerCanvas()
+  const c = ridgeCv.getContext('2d')!
+  c.clearRect(0, 0, W, H)
+  c.putImageData(img, 0, 0)
+  view.ridgeCv = ridgeCv
+}
+
+// There is no sag field unless the Rubber sheet slider is up, so say so rather
+// than leaving the checkbox to do nothing; when there is one, the label reports
+// what full brightness is worth in pixels.
+function sagLabel() {
+  const has = !!doc.sag
+  $('lSagView').className = 's' + (has ? '' : ' off')
+  $('vSagView').textContent = has ? `(0–${Math.round(doc.sagMax)}px)` : '(needs Rubber sheet)'
+}
+
+function refreshOverlays() {
+  const sagOn = ($<HTMLInputElement>('cSagView')).checked
+  const ridgeOn = ($<HTMLInputElement>('cRidge')).checked
+  view.showSag = sagOn
+  view.showRidges = ridgeOn
+  if (sagOn) rebuildSagCanvas()
+  if (ridgeOn) rebuildRidgeCanvas()
+  view.render()
+}
 
 function rebuildLineCanvas() {
   const { W, H } = doc
@@ -119,7 +230,9 @@ function rebuildFills() {
   }
   fillsCtx.putImageData(fillsImg, 0, 0)
   view.fills = fillsCv
-  view.render()
+  // merges/splits move the ridges, and every structural edit lands here; the
+  // rebuild is skipped entirely unless the overlay is switched on
+  refreshOverlays()
 }
 
 function rasterizeBarriers() {
@@ -251,6 +364,9 @@ function runFlat(matchOld: boolean) {
     if (m.t === 'flat') {
       doc.core = new Int32Array(m.core)
       doc.labels = new Int32Array(m.labels)
+      doc.sag = m.sag ? new Uint8Array(m.sag) : null
+      doc.sagMax = m.sagMax ?? 0
+      sagLabel()
       const regs: Region[] = []
       for (const ri of m.regions as { id: number; area: number; isBg: boolean }[]) {
         regs[ri.id] = { id: ri.id, color: paletteColor(ri.id), name: 'Fill ' + ri.id, visible: !ri.isBg, parent: ri.id, area: ri.area, isBg: ri.isBg }
@@ -830,6 +946,9 @@ async function loadFile(f: File) {
   }
   doc.ink = extractInk(pixels, params().sat)
   doc.core = doc.labels = null
+  doc.sag = null; doc.sagMax = 0   // stale field would be the previous image's size
+  sagCv = ridgeCv = view.sagCv = view.ridgeCv = null
+  sagLabel()
   doc.regions = []
   doc.strokes = []
   doc.groups = []
@@ -979,6 +1098,7 @@ const schedulePreview = () => {
 }
 for (const id of ['sThr', 'sSat', 'sSm']) $(id).oninput = () => { resetAutoBridge(); sliderLive(); setDirty(true); schedulePreview(); scheduleQuickFlat() }
 for (const id of ['sGap', 'sMin', 'sSliv', 'sDecl', 'sSag']) $(id).oninput = () => { resetAutoBridge(); sliderLive(); setDirty(true); scheduleQuickFlat() }
+$('cSagView').onchange = $('cRidge').onchange = () => refreshOverlays()
 // palette is a pure recolour: no re-segmentation, so apply it immediately
 $('sPal').oninput = () => {
   sliderLive()
@@ -1007,7 +1127,9 @@ addEventListener('unhandledrejection', e => {
 })
 
 setTool('pan')
+sagLabel()
 if ((navigator as any).gpu) $('lGpu').hidden = false
-// automation/test hook
+// automation/test hooks
 ;(window as any).__openUrl = async (u: string) =>
   openFile(new File([await (await fetch(u)).blob()], u.split('/').pop() || 'img.png'))
+;(window as any).__view = view
