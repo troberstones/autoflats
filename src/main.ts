@@ -1290,9 +1290,41 @@ $('cAuto').onchange = () => { if (dirty) scheduleAutoFlat(0) }
 $('sOp').oninput = () => { view.lineOpacity = sl('sOp') / 100; view.render() }
 $('cLines').onchange = () => { view.showLines = ($<HTMLInputElement>('cLines')).checked; if (doc.src) rebuildLineCanvas() }
 
-// drag & drop
-addEventListener('dragover', e => e.preventDefault())
-addEventListener('drop', e => { e.preventDefault(); const f = e.dataTransfer?.files?.[0]; if (f) openFile(f) })
+// Drag & drop. preventDefault on dragover is what makes the window a drop
+// target at all, but on its own the pointer still shows "no drop" and nothing
+// says the app takes files -- so set dropEffect explicitly and put up a target.
+// dragenter/dragleave fire for every child element crossed, hence the depth
+// count rather than a boolean.
+const dragHasFiles = (e: DragEvent) => !!e.dataTransfer && [...e.dataTransfer.types].includes('Files')
+const IMAGE_NAME = /\.(png|jpe?g|gif|webp|bmp|avif)$/i
+let dragDepth = 0
+const showDropzone = (on: boolean) => { $('dropzone').style.display = on ? 'flex' : 'none' }
+
+addEventListener('dragenter', e => {
+  if (!dragHasFiles(e)) return
+  e.preventDefault()
+  if (++dragDepth === 1) showDropzone(true)
+})
+addEventListener('dragover', e => {
+  if (!dragHasFiles(e)) return
+  e.preventDefault()
+  e.dataTransfer!.dropEffect = 'copy'
+})
+addEventListener('dragleave', e => {
+  if (!dragHasFiles(e)) return
+  if (--dragDepth <= 0) { dragDepth = 0; showDropzone(false) }
+})
+addEventListener('drop', e => {
+  if (!dragHasFiles(e)) return
+  e.preventDefault()
+  dragDepth = 0
+  showDropzone(false)
+  const files = [...(e.dataTransfer?.files ?? [])]
+  // take the first thing that is actually an image; some sources give no MIME
+  const img = files.find(f => f.type.startsWith('image/') || IMAGE_NAME.test(f.name))
+  if (!img) { status(files.length ? `Not an image: ${files[0].name}` : 'Nothing to open'); return }
+  openFile(img)
+})
 
 // Never fail silently: an uncaught error used to leave the UI looking idle
 // (a click that "does nothing"), with the reason only in the dev console.

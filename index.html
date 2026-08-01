@@ -37,6 +37,10 @@
   .hint { color: #888; font-size: 11px; }
   label.s.off { opacity: .45; }
   .spin { color: #6cf; }
+  /* pointer-events:none so the overlay can never eat the drag it is advertising */
+  #dropzone { position: fixed; inset: 0; z-index: 50; display: none; pointer-events: none;
+              align-items: center; justify-content: center; background: rgba(20,30,45,.82);
+              border: 4px dashed #6cf; font-size: 20px; color: #cfe8ff; }
 </style>
 </head>
 <body>
@@ -96,6 +100,7 @@
   </div>
   <!-- visually hidden rather than display:none: Safari will not open the file
        picker for a hidden input when .click() is called from script -->
+  <div id="dropzone">Drop line art to open</div>
   <input type="file" id="file" accept="image/*" style="position:fixed;left:-9999px;width:1px;height:1px;opacity:0">
   <script type="module" src="/src/main.ts"></script>
 </body>

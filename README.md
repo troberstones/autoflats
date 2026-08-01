@@ -7,6 +7,7 @@ Auto flat-filling for line art. Load an image, get one flat color fill per regio
 ```
 npm install
 npm run dev     # open http://localhost:5173
+npm test        # invariant tests, ~9s
 ```
 
 To host it anywhere else, **build first and serve `dist/`**:

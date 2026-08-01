@@ -245,22 +245,46 @@ Accept All. Cluster Small merges small open-bordered fills.
 
 ## Testing
 
-No unit-test framework. Validation is a **headless harness** that runs the real
-core modules against the sample images:
+`npm test` — [test/run.ts](test/run.ts), ~9s, no framework and no new
+dependencies (Node's own TS stripping, `--experimental-transform-types`).
 
-- Convert samples to raw RGBA once: `ffmpeg -i Lineart2.png -f rawvideo -pix_fmt rgba out.rgba`.
-- Run the pipeline with Node's TS stripping:
-  `node --experimental-transform-types test.ts` (import core modules with explicit
-  `.ts` extensions; `allowImportingTsExtensions` is on in tsconfig).
-- The harness prints region/background/max-fill/merge/gap counts per image and
-  renders coloured flats to PNG for visual inspection. Scripts live in the session
-  scratchpad (`test.ts`, `testskel.ts`, `testpsd.ts`) — recreate as needed.
-- PSD round-trips are checked by `ag-psd`'s `readPsd` and by rendering with macOS
-  `sips -s format png out.psd`.
-- **Health checks after any pipeline change:** background stays one bounded region
-  (no whole-image leak), max non-bg fill stays small, no explosion of tiny regions,
-  fills reach stroke centres (render with line layer off — adjacent fills should
-  abut with no seam).
+The suite asserts **invariants, not numbers**. Region counts move whenever the
+algorithm is tuned, so pinning them would only produce a test that gets updated
+rather than read. What must never change is the shape of the result, and
+`checkSegmentation` in [test/run.ts](test/run.ts) is the core of it:
+
+- every pixel belongs to a region (expansion covers the ink);
+- `core` is empty on ink and non-empty everywhere else;
+- something is flagged as background;
+- ids are compact `1..K`, every area > 0, and the areas tile the free space.
+
+That set is chosen deliberately: **every one of them was false while the GPU
+growth path was silently returning a zero-filled label map**, and none was
+checked anywhere, which is exactly why that bug survived — the fill *count*
+stayed plausible, so nothing looked wrong without probing the label map by hand.
+
+Also covered: the membrane against its analytic strip and disc solutions, the
+trapped-ball gap guarantee (a 6px gap holds at gap size 8, a 40px one leaks),
+sag holding a narrow gap and absorbing hatching, and PSD round-trips through
+`readPsd` for all three export modes plus group folders and hidden fills.
+
+**The suite has been mutation-tested.** Zeroing `expandLabels`' output (the GPU
+bug's signature) fails 10 cases; removing the multigrid line search fails the
+convergence case. Do that again after adding a test — a green suite that has
+never failed proves nothing.
+
+Two notes on fixtures:
+
+- `test/fixtures/diverging-mask.json` is the RLE'd line mask of
+  `Lineart6_notclean`, committed because it is the **only** input that
+  reproduces the multigrid divergence. Synthetic hatching does not, and neither
+  does any crop of that same image — both are stable at `alpha = 1`. 40KB is
+  worth paying to keep that regression runnable without ffmpeg.
+- The real-sample sweep needs `ffmpeg`/`ffprobe` and *skips loudly* without
+  them, so the rest of the suite runs anywhere.
+
+Still worth doing by eye after a pipeline change: fills reach stroke centres
+(render with the line layer off — adjacent fills should abut with no seam).
 
 ## The rubber sheet ([membrane.ts](src/core/membrane.ts), [sag.ts](src/core/sag.ts))
 
