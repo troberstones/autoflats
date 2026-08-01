@@ -32,6 +32,15 @@ import { membraneSag } from './membrane.ts'
 
 const SUB = 8            // sag quantisation, 1/8 px
 const REL = 0.3          // also merge when the col is within 30% of the peak
+// How much wider the opening has to be before an ENCLOSED basin is absorbed.
+// Two basins that both reach the image frame are two lobes of the same open
+// paper and merge at plain `wide` -- that is what keeps the background a single
+// region. A basin that never reaches the frame is a drawn area, and horns,
+// fingers and hair open onto the background through necks several stroke-gaps
+// across, so absorbing them at `wide` loses them. Measured over the seven
+// samples, separating the two cases cuts the area lost to the background by
+// 2-8x (Lineart3 5.27% -> 0.67%) while the background stays one region.
+const ENCLOSED = 3
 
 export interface SagResult {
   core: Int32Array       // region id per free pixel, 0 on ink
@@ -285,22 +294,42 @@ export function sagSegment(line: Uint8Array, W: number, H: number, tauPx: number
   //   up to `wide`   narrower than the trapped ball, so the two sides stay
   //                  separate on the same guarantee trapped-ball segmentation
   //                  gives -- a ball of radius r cannot pass a gap under 2r.
-  //   over `wide`    too wide for the ball. Now it matters whether there is ink
-  //                  to justify a wall: a broken silhouette keeps its boundary
-  //                  (and beats trapped-ball, which would have leaked), while
-  //                  the seam between two lobes of open background does not.
+  //                  An enclosed basin gets ENCLOSED times the allowance (see
+  //                  below), because a drawn area meets the background through
+  //                  a neck, not through a stroke gap.
+  //   over that      Now it matters whether there is ink to justify a wall: a
+  //                  broken silhouette keeps its boundary (and beats
+  //                  trapped-ball, which would have leaked), while the seam
+  //                  between two lobes of open background does not.
   const minCol = 2 * SUB
   const wide = 2 * maxGap * SUB
   const budget = Math.max(6, 2 * maxGap + 4)
+
+  // Which roots reach the image frame. The membrane is pinned at the frame just
+  // as it is on ink, so a basin that runs off the edge is open paper; one that
+  // never does is enclosed by the drawing.
+  const frameRoots = () => {
+    const f = new Uint8Array(K + 1)
+    const mark = (i: number) => { const r = core[i]; if (r) f[find(r)] = 1 }
+    for (let x = 0; x < W; x++) { mark(x); mark((H - 1) * W + x) }
+    for (let y = 0; y < H; y++) { mark(y * W); mark(y * W + W - 1) }
+    return f
+  }
+
   // Merging changes who is adjacent to whom, so re-scan until it settles.
   for (let round = 0; round < 4; round++) {
     let merged = false
+    const frame = frameRoots()
     for (const [key, p] of colSites()) {
-      if (q[p] <= wide || q[p] < minCol) continue
+      if (q[p] < minCol) continue
+      const ra = find((key / 1048576) | 0), rb = find(key % 1048576)
+      if (ra === rb) continue
+      const bothOpen = frame[ra] && frame[rb]
+      if (q[p] <= wide * (bothOpen ? 1 : ENCLOSED)) continue
       if (inkJustifies(p, q, line, W, H, budget)) continue
-      const a = (key / 1048576) | 0, b = key % 1048576
-      const ra = find(a), rb = find(b)
-      if (ra !== rb) { parent[rb] = ra; merged = true }
+      parent[rb] = ra
+      if (peak[rb] > peak[ra]) peak[ra] = peak[rb]
+      merged = true
     }
     if (!merged) break
     for (let i = 0; i < N; i++) if (core[i]) core[i] = find(core[i])
