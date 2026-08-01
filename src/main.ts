@@ -116,10 +116,24 @@ function rebuildSagCanvas() {
   // 256-entry lookup built once per rebuild; a naive red->yellow ramp saturates
   // halfway up and throws away everything above it, so use evenly-spaced stops
   const ramp = new Uint8Array(256 * 3)
+  // Zebra: quantise the ramp into n flat bands, i.e. contour lines on the sheet.
+  // Two things it buys over the smooth ramp: the level sets become visible, so
+  // stripe spacing reads as slope (tight = a wall falling away, wide = a
+  // plateau), and a col shows up as the stripe that pinches and pairs across an
+  // opening. Banding alone is not enough -- neighbouring bands of a smooth ramp
+  // still blend at a glance -- so every other one is dimmed, which is what makes
+  // it a zebra rather than a posterisation. Bands are even on the STORED byte,
+  // which is log (see sagView in the worker): linear bands would put the whole
+  // interior of a figure in one stripe while the open background ate the rest.
+  const n = sl('sZebra')
   for (let v = 0; v < 256; v++) {
-    const t = (v / 255) * (SAG_RAMP.length - 1)
+    const band = n ? Math.min(n - 1, (v * n) >> 8) : 0
+    // sample the ramp at the middle of the band so a stripe is one flat colour
+    const q = n ? Math.min(255, Math.round((band + 0.5) * 256 / n)) : v
+    const t = (q / 255) * (SAG_RAMP.length - 1)
     const k = Math.min(SAG_RAMP.length - 2, t | 0), f = t - k
-    for (let c = 0; c < 3; c++) ramp[v * 3 + c] = SAG_RAMP[k][c] + (SAG_RAMP[k + 1][c] - SAG_RAMP[k][c]) * f
+    const dim = n && (band & 1) ? 0.55 : 1
+    for (let c = 0; c < 3; c++) ramp[v * 3 + c] = (SAG_RAMP[k][c] + (SAG_RAMP[k + 1][c] - SAG_RAMP[k][c]) * f) * dim
   }
   for (let i = 0; i < doc.sag.length; i++) {
     const v = doc.sag[i] * 3, o = i * 4
@@ -188,6 +202,8 @@ function rebuildRidgeCanvas() {
 function sagLabel() {
   const has = !!doc.sag
   $('lSagView').className = 's' + (has ? '' : ' off')
+  $('lZebra').className = 's' + (has ? '' : ' off')
+  ;($<HTMLInputElement>('sZebra')).disabled = !has
   $('vSagView').textContent = has ? `(0–${Math.round(doc.sagMax)}px)` : '(needs Rubber sheet)'
 }
 
@@ -1286,6 +1302,7 @@ const sliderLive = () => {
   $('vPal').textContent = sl('sPal') ? '' + sl('sPal') : 'unique'
   $('vDecl').textContent = sl('sDecl') ? '' + sl('sDecl') : 'off'
   $('vSag').textContent = sl('sSag') ? sl('sSag') + 'px' : 'off'
+  $('vZebra').textContent = sl('sZebra') ? sl('sZebra') + ' bands' : 'off'
   syncSagUI()
 }
 let pvTimer = 0
@@ -1304,6 +1321,8 @@ const schedulePreview = () => {
 for (const id of ['sThr', 'sSat', 'sSm']) $(id).oninput = () => { resetAutoBridge(); sliderLive(); setDirty(true); schedulePreview(); scheduleQuickFlat() }
 for (const id of ['sGap', 'sMin', 'sSliv', 'sDecl', 'sSag']) $(id).oninput = () => { resetAutoBridge(); sliderLive(); setDirty(true); scheduleQuickFlat() }
 $('cSagView').onchange = $('cRidge').onchange = () => refreshOverlays()
+// Zebra is a pure recolour of the sag canvas: no re-segmentation, no dirty flag.
+$('sZebra').oninput = () => { sliderLive(); if (($<HTMLInputElement>('cSagView')).checked) refreshOverlays() }
 // palette is a pure recolour: no re-segmentation, so apply it immediately
 $('sPal').oninput = () => {
   sliderLive()

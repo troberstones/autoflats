@@ -94,6 +94,7 @@
     <label class="s">Line opacity <input type="range" id="sOp" min="0" max="100" value="100"></label>
     <label class="s"><input type="checkbox" id="cLines"> Show extracted lines</label>
     <label class="s" id="lSagView" title="Show the rubber sheet itself: black where it is pinned to the ink, brightening as it sags. Needs the Rubber sheet slider to be up."><input type="checkbox" id="cSagView"> Sag field <span id="vSagView" class="hint"></span></label>
+    <label class="s" id="lZebra" title="Cut the sag field into this many flat bands, like contour lines on a map — every stripe is one step of roominess, so tight stripes mean the sheet is falling away fast and a wide stripe is a plateau. Alternate bands are dimmed so neighbours never blend. Bands are evenly spaced on the same log scale as the ramp. 0 = smooth ramp.">Zebra <input type="range" id="sZebra" min="0" max="32" value="0"><span id="vZebra">off</span></label>
     <label class="s" title="Draw the edits that are remembered and replayed after every re-flat: draw-merge strokes (green), deleted-fill markers (red ✖) and group lassos (yellow). Pick and remove them with the ⬚ tool."><input type="checkbox" id="cEdits"> Edits</label>
     <label class="s" title="Outline the watershed ridges between fills. White where the ridge lies on ink (the artist drew that boundary); cyan where it crosses blank paper — a gap that got closed with nothing drawn across it."><input type="checkbox" id="cRidge"> Ridges</label>
     <button id="bUndo" disabled>Undo ⌘Z</button>
