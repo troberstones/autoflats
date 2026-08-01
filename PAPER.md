@@ -345,12 +345,35 @@ reachable in sag mode.
 
 ## 6. Limitations and failure modes
 
-**Zero-persistence plateau ties.** One 834px horn, fully enclosed by extracted
-ink, still merges into the background. Its merge contacts have persistence
-*exactly zero* — the basin's peak equals its col, a plateau tie in the quantised
-field — so no threshold reaches it: sweeping τ from 2 to 10 and the line
-threshold from 10% to 25% leaves it merged. This is a quantisation/plateau
-artefact, not a tuning failure, and we have not fixed it.
+**Tapering shapes are invisible to the field.** A horn on one sample merged into
+the background with persistence *exactly zero*. Measuring it explains why, and
+the explanation is structural rather than numerical: the horn's peak sag
+(18.28px) occurs at the very pixel where it opens onto the background — the
+shape tapers monotonically inward from its own mouth, so it has no excess width
+anywhere.
+
+This is not a quantisation artefact and not a tuning failure. Flooding the
+superlevel set `{sag ≥ t}` from the horn's peak reaches the background's peak at
+*every* level from 18.28px down to 2px: the horn is never a connected component
+of any superlevel set. It is therefore not a feature of the field's topology at
+all, and **no attribute-based hierarchy can recover it** — not dynamics, not
+area or volume extinction [Vachier and Meyer 1995], not persistent homology of
+the superlevel filtration. We tested this before implementing such a hierarchy,
+and abandoned it on the evidence.
+
+The recovery has to come from ink rather than from the field, which is what the
+pre-closing pass of §4.4 provides: the horn's base is a genuine 8.1px stroke
+break with tips on both sides, and closing it makes the horn an enclosed pocket
+with a maximum of its own. It was being rejected by three degrees of bend (the
+join needs 63°, the limit was 60°); at 70° the horn becomes an 889px fill and
+the sample's swallowed area falls from 0.53% to 0.24%, with no sample losing
+more than +2 fills and none splitting its background.
+
+**The general limitation stands, however.** The torsion field measures width and
+persistence measures *excess* width, so any shape attached to its neighbour at
+its own widest point — horns, antennae, tails, tapered fingers — is invisible to
+the field and depends entirely on ink evidence to be recovered. Where no tip
+pair spans the opening, it will be lost.
 
 **Crest placement.** Even when a gapped area is correctly separated, the wall
 lands on the crest rather than across the opening (§4.4). The pre-closing pass
@@ -425,14 +448,17 @@ baseline, no user study) would not carry it.
    et al., and a learned baseline on a public set, and run a colourist study
    measuring *time to a usable flat*, not fill counts. If the sheet wins on
    human time, that is publishable regardless of component novelty.
-3. **Push the theory.** The zero-persistence failure (§6) suggests the
-   quantised watershed is the wrong discretisation. A treatment using the
-   field's actual critical points — a Morse–Smale complex on the torsion
-   function, with the merge rule stated as persistent homology of the sublevel
-   filtration — would be a stronger and more defensible framing, and would
-   likely fix the failure rather than work around it.
+3. ~~**Push the theory.**~~ *Tested and withdrawn.* An earlier draft argued that
+   the zero-persistence failure meant the quantised watershed was the wrong
+   discretisation, and that a Morse–Smale / persistent-homology treatment would
+   fix it. Measurement (§6) refutes this: the shape is not a feature of the
+   field's topology at any level, so no reformulation of the hierarchy — however
+   principled — can produce it. The honest statement is the one now in §6: the
+   field has a structural blind spot for tapering shapes, and ink-based closure
+   is the only recovery. Stating a limitation precisely is worth more here than
+   dressing it up as future work.
 
-My recommendation is (1) now and (3) if you want a full paper.
+My recommendation is (1) now, and (2) if you want a full paper.
 
 ---
 
@@ -471,6 +497,8 @@ My recommendation is (1) now and (3) if you want a full paper.
   *ACM TOG (SIGGRAPH)* 35(4).
 - Sýkora, D., Dingliana, J., Collins, S. 2009. LazyBrush: flexible painting tool
   for hand-drawn cartoons. *Computer Graphics Forum (Eurographics)* 28(2).
+- Vachier, C., Meyer, F. 1995. Extinction value: a new measurement of
+  persistence. *IEEE Workshop on Nonlinear Signal and Image Processing*.
 - Vincent, L., Soille, P. 1991. Watersheds in digital spaces: an efficient
   algorithm based on immersion simulations. *IEEE TPAMI* 13(6).
 - Williams, L. R., Jacobs, D. W. 1997. Stochastic completion fields: a neural

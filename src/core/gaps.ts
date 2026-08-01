@@ -256,7 +256,15 @@ function nearestForeignLine(line: Uint8Array, sk: Uint8Array, A: { x: number; y:
 // One closure per tip, best-first, so nothing gets fanned out to three
 // neighbours.
 const TIGHT_CONE = 0.7    // cos, ~45 degrees off the chord
-const TIGHT_BEND = 60     // degrees of total turn allowed across the join
+// Degrees of total turn allowed across the join (suggestGaps allows 90). Was 60,
+// which rejected the base of a horn on Lineart4_crop by three degrees -- that
+// join needs 63 -- and that one gap was the difference between the horn being a
+// fill and being background. Swept over the seven samples at 60/70/80/90: 70
+// costs at most +2 fills anywhere, never splits the background, and never makes
+// the swallowed-area figure worse (Lineart4_crop 0.53% -> 0.24%, the horn). 80
+// and 90 add closures but buy no further area back, so they are risk with no
+// return.
+const TIGHT_BEND = 70
 
 // Is the chord's interior free of ink? The tips are SKELETON points, sitting on
 // the centreline half a stroke deep in their own ink, so every chord starts and
@@ -287,7 +295,8 @@ function crossingIsOpen(line: Uint8Array, W: number, H: number,
   return true
 }
 
-export function tightClosures(line: Uint8Array, W: number, H: number, maxGap: number): number[] {
+export function tightClosures(line: Uint8Array, W: number, H: number, maxGap: number,
+                               cone = TIGHT_CONE, bend = TIGHT_BEND): number[] {
   const maxBridge = Math.max(6, maxGap * 2 + 4)
   const { info, wd } = extractEndpoints(line, W, H, maxBridge, true)
   const pairs: Array<[number, number, number]> = []
@@ -299,7 +308,7 @@ export function tightClosures(line: Uint8Array, W: number, H: number, maxGap: nu
       if (A.branch.has(B.i)) continue                     // same stroke, already joined
       const wa = wd[A.i], wb = wd[B.i]
       if (Math.max(wa, wb) > 2.5 * Math.min(wa, wb) + 3) continue
-      const rel = relatable(A.x, A.y, A.dx, A.dy, B.x, B.y, B.dx, B.dy, TIGHT_CONE, TIGHT_BEND)
+      const rel = relatable(A.x, A.y, A.dx, A.dy, B.x, B.y, B.dx, B.dy, cone, bend)
       if (!rel.ok) continue
       if (!crossingIsOpen(line, W, H, A.x, A.y, B.x, B.y)) continue
       pairs.push([rel.energy, a, b])
