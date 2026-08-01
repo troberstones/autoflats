@@ -281,23 +281,70 @@ function rebuildFills() {
   refreshOverlays()
 }
 
+const ERASE_R = 6 // barrier eraser radius, px
+
+// One pixel, 8-connected: the thinnest barrier that still blocks every flood we
+// run. A barrier is pinned into the membrane exactly like ink, so every pixel of
+// width is a pixel of roominess taken from the areas either side of it, and the
+// rubber sheet decides what survives by how far an area sags. Measured on a
+// square split down the middle, a 3px barrier costs the neighbouring basin
+// ~0.9px of peak sag whatever its size (7.62 -> 6.72 on a 7px-wide half, 19.08
+// -> 18.23 on a 19px one) -- the pixel it eats on each side, no more. Small in
+// absolute terms, but that is 12% of a narrow one, and a hand-closed gap is
+// usually next to exactly such a sliver, where persistence is already near tau.
+//
+// 1px is enough because of how the floods step: the trapped ball moves
+// 4-connected (trappedBall.ts:75), and the sag flood is 8-connected but refuses
+// a diagonal when both orthogonal cells are ink (sag.ts:207) -- which is exactly
+// the staircase a Bresenham line presents at every bend.
+function markLine(mask: Uint8Array, x0: number, y0: number, x1: number, y1: number) {
+  const { W, H } = doc
+  let x = Math.round(x0), y = Math.round(y0)
+  const ex = Math.round(x1), ey = Math.round(y1)
+  const dx = Math.abs(ex - x), dy = -Math.abs(ey - y)
+  const sx = x < ex ? 1 : -1, sy = y < ey ? 1 : -1
+  let err = dx + dy
+  for (;;) {
+    if (x >= 0 && y >= 0 && x < W && y < H) mask[y * W + x] = 1
+    if (x === ex && y === ey) break
+    const e2 = 2 * err
+    if (e2 >= dy) { err += dy; x += sx }
+    if (e2 <= dx) { err += dx; y += sy }
+  }
+}
+
+// The eraser stays fat -- it is a pointing device, not a wall.
+function clearDisc(mask: Uint8Array, x0: number, y0: number, x1: number, y1: number) {
+  const { W, H } = doc
+  const lo = (v: number) => Math.max(0, Math.floor(v - ERASE_R))
+  for (let y = lo(Math.min(y0, y1)); y <= Math.min(H - 1, Math.ceil(Math.max(y0, y1) + ERASE_R)); y++)
+    for (let x = lo(Math.min(x0, x1)); x <= Math.min(W - 1, Math.ceil(Math.max(x0, x1) + ERASE_R)); x++)
+      if (distToSeg(x, y, x0, y0, x1, y1) <= ERASE_R) mask[y * W + x] = 0
+}
+
 function rasterizeBarriers() {
+  // The overlay is drawn thicker than the mask on purpose: a 1px line is
+  // invisible at fit-to-window zoom, and legibility is a display concern with no
+  // business in the sag field.
   barrierCtx.clearRect(0, 0, doc.W, doc.H)
   barrierCtx.lineCap = barrierCtx.lineJoin = 'round'
+  const mask = new Uint8Array(doc.W * doc.H)
   for (const s of doc.strokes) {
     barrierCtx.globalCompositeOperation = s.mode === 'draw' ? 'source-over' : 'destination-out'
     barrierCtx.strokeStyle = '#39f'
-    barrierCtx.lineWidth = s.mode === 'draw' ? 3 : 12
+    barrierCtx.lineWidth = s.mode === 'draw' ? 3 : ERASE_R * 2
     barrierCtx.beginPath()
     barrierCtx.moveTo(s.pts[0], s.pts[1])
     if (s.pts.length === 2) barrierCtx.lineTo(s.pts[0] + 0.1, s.pts[1])
     for (let i = 2; i < s.pts.length; i += 2) barrierCtx.lineTo(s.pts[i], s.pts[i + 1])
     barrierCtx.stroke()
+    // A dab is a single point; give it a zero-length segment so it still marks.
+    const p = s.pts
+    const step = s.mode === 'draw' ? markLine : clearDisc
+    if (p.length === 2) step(mask, p[0], p[1], p[0], p[1])
+    for (let i = 2; i < p.length; i += 2) step(mask, p[i - 2], p[i - 1], p[i], p[i + 1])
   }
   barrierCtx.globalCompositeOperation = 'source-over'
-  const a = barrierCtx.getImageData(0, 0, doc.W, doc.H).data
-  const mask = new Uint8Array(doc.W * doc.H)
-  for (let i = 0; i < mask.length; i++) if (a[i * 4 + 3] > 64) mask[i] = 1
   doc.barrierMask = mask
   strokesVersion++
   view.render()
