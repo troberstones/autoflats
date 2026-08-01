@@ -22,6 +22,9 @@ export interface Group { id: number; name: string; path: number[] }
 // losing it. All three are replayed together by replayEdits() in main.ts.
 export interface MergeStroke { id: number; pts: number[] }
 export interface DeleteMark { id: number; x: number; y: number }
+// The two-click merge tool, remembered the same way: the two points that were
+// clicked, not the two region ids they resolved to at the time.
+export interface MergePair { id: number; ax: number; ay: number; bx: number; by: number }
 
 export interface Stroke { pts: number[]; mode: 'draw' | 'erase' }
 
@@ -38,9 +41,13 @@ export class Doc {
   barrierMask: Uint8Array | null = null
   sag: Uint8Array | null = null // rubber-sheet height, 0..255 (see worker sagView)
   sagMax = 0                    // what 255 means, in px
+  // gaps the segmenter sealed by itself, [x1,y1,x2,y2,...]. Display only: they
+  // are re-derived from the line mask on every flat, never edited, never saved.
+  closures: number[] = []
   groups: Group[] = []
   nextGroup = 1
   mergeStrokes: MergeStroke[] = []
+  mergePairs: MergePair[] = []
   deleteMarks: DeleteMark[] = []
   nextEdit = 1
 

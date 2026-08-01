@@ -1,4 +1,4 @@
-import { Doc, Region, Stroke, UndoOp, paletteColor, rgbToHex, hexToRgb, hslToRgb } from './state.ts'
+import { Doc, Region, Stroke, UndoOp, type MergePair, paletteColor, rgbToHex, hexToRgb, hslToRgb } from './state.ts'
 import { CanvasView, Tool } from './ui/canvasView.ts'
 import { extractInk, thresholdInk } from './core/ink.ts'
 import { smoothMask, skeletonize } from './core/morphology.ts'
@@ -32,7 +32,9 @@ function cancelWork() {
 }
 let busy = false
 let token = 0
-let mergeFirst = 0
+// The merge tool's first click, kept as a point as well as a region: the point
+// is what gets remembered, since region ids do not survive a re-flat.
+let mergeFirst: { id: number; x: number; y: number } | null = null
 let selected = 0
 let dirty = false // segmentation stale (threshold/barrier changed)
 
@@ -75,7 +77,7 @@ const pickColor = (): [number, number, number] =>
   ($<HTMLInputElement>('cRand')).checked
     ? hslToRgb(Math.random() * 360, 0.45 + Math.random() * 0.3, 0.6 + Math.random() * 0.2)
     : hexToRgb(($('curColor') as HTMLInputElement).value)
-const params = () => ({ thr: sl('sThr') / 100, sat: sl('sSat') / 100, gap: sl('sGap'), min: sl('sMin'), smooth: sl('sSm'), sliver: sl('sSliv'), decl: sl('sDecl'), sag: sl('sSag') })
+const params = () => ({ thr: sl('sThr') / 100, sat: sl('sSat') / 100, gap: sl('sGap'), min: sl('sMin'), smooth: sl('sSm'), sliver: sl('sSliv'), decl: sl('sDecl'), sag: sl('sSag'), hybrid: ($<HTMLInputElement>('cHybrid')).checked })
 
 function currentLineMask(includeBarriers = true): Uint8Array {
   let line = smoothMask(thresholdInk(doc.ink!, params().thr), doc.W, doc.H, params().smooth)
@@ -459,6 +461,7 @@ function runFlat(matchOld: boolean) {
       doc.labels = new Int32Array(m.labels)
       doc.sag = m.sag ? new Uint8Array(m.sag) : null
       doc.sagMax = m.sagMax ?? 0
+      doc.closures = m.closures ?? []
       sagLabel()
       const regs: Region[] = []
       for (const ri of m.regions as { id: number; area: number; isBg: boolean }[]) {
@@ -478,7 +481,10 @@ function runFlat(matchOld: boolean) {
       view.paths = m.paths ?? []
       view.segFocus = -1
       afterModelChange()
-      status(`${m.regions.length} fills` + (view.paths.length ? ` · ${view.paths.length} suggested gaps — Tab to review, click or Enter to bridge` : ''))
+      const nClosed = doc.closures.length / 4
+      status(`${m.regions.length} fills`
+        + (nClosed ? ` · sealed ${nClosed} tight gap${nClosed > 1 ? 's' : ''}` : '')
+        + (view.paths.length ? ` · ${view.paths.length} suggested gaps — Tab to review, click or Enter to bridge` : ''))
       setBusy(false)
       // Auto-bridge: every suggestion has already been proven to close a fill
       // (closure test in closure.ts), so accepting them is safe. Bounded rounds
@@ -496,9 +502,10 @@ function runFlat(matchOld: boolean) {
   const p = params()
   worker().postMessage({
     t: 'flat', line: line.buffer, ink: ink.buffer, W: doc.W, H: doc.H,
-    maxGap: p.gap, minArea: p.min, sliverW: p.sag ? 0 : p.sliver, autoMerge: !p.sag && ($<HTMLInputElement>('cMerge')).checked,
-    declutter: p.decl, sagTau: p.sag,
-    segKey: `${doc.W}|${p.thr}|${p.smooth}|${p.gap}|${p.sat}|${strokesVersion}|${($<HTMLInputElement>('cSkel')).checked}|${p.sag}|${($<HTMLInputElement>('cGpu')).checked}`,
+    maxGap: p.gap, minArea: p.min, sliverW: p.sag ? 0 : p.sliver,
+    autoMerge: !p.sag && ($<HTMLInputElement>('cMerge')).checked,
+    declutter: p.decl, sagTau: p.sag, hybrid: p.hybrid,
+    segKey: `${doc.W}|${p.thr}|${p.smooth}|${p.gap}|${p.sat}|${strokesVersion}|${($<HTMLInputElement>('cSkel')).checked}|${p.sag}|${($<HTMLInputElement>('cGpu')).checked}|${p.hybrid}`,
     flowKey: `${doc.W}|${p.sat}`,
     useGpu: !p.sag && ($<HTMLInputElement>('cGpu')).checked,  // sag never reaches the GPU branch
     token: tk,
@@ -618,6 +625,7 @@ function deleteFill(id: number, x: number, y: number) {
 function replayEdits() {
   if (!doc.labels) return
   for (const s of doc.mergeStrokes) applyMergeStroke(s.pts)
+  for (const p of doc.mergePairs) applyMergePair(p)
   for (const r of doc.regions) if (r) r.deleted = false
   for (const m of doc.deleteMarks) {
     const x = m.x | 0, y = m.y | 0
@@ -626,6 +634,22 @@ function replayEdits() {
     if (r) r.deleted = true
   }
   assignGroups()
+}
+
+// Re-run one two-click merge against whatever regions now sit under its two
+// points. Silent when either point has landed on ink, off the image, or in the
+// same region as the other: a re-flat can legitimately have joined them
+// already, and there is nothing to do about that but leave it alone.
+function applyMergePair(p: MergePair) {
+  const at = (x: number, y: number): Region | null => {
+    const ix = x | 0, iy = y | 0
+    if (ix < 0 || iy < 0 || ix >= doc.W || iy >= doc.H) return null
+    return doc.regions[doc.root(doc.labels![iy * doc.W + ix])] ?? null
+  }
+  const a = at(p.ax, p.ay), b = at(p.bx, p.by)
+  if (!a || !b || a.id === b.id) return
+  b.parent = a.id
+  a.area += b.area
 }
 
 // ---------- remembered edits: overlay, picking, removal ----------
@@ -637,6 +661,9 @@ const editKey = (h: { kind: EditKind; id: number }) => h.kind + ':' + h.id
 function editList(): EditRef[] {
   const out: EditRef[] = []
   for (const s of doc.mergeStrokes) out.push({ kind: 'merge', id: s.id, pts: s.pts, label: 'draw merge' })
+  // Same kind as a draw-merge: it is the same operation, drawn the same green,
+  // and ids come from one counter so the keys stay unique across both lists.
+  for (const p of doc.mergePairs) out.push({ kind: 'merge', id: p.id, pts: [p.ax, p.ay, p.bx, p.by], label: 'merge' })
   for (const m of doc.deleteMarks) out.push({ kind: 'delete', id: m.id, pts: [m.x, m.y], label: 'deleted fill' })
   for (const g of doc.groups) out.push({ kind: 'group', id: g.id, pts: g.path, label: `group "${g.name}"` })
   return out
@@ -645,6 +672,11 @@ function editList(): EditRef[] {
 function rebuildEditView() {
   view.showEdits = ($<HTMLInputElement>('cEdits')).checked
   view.edits = editList().map(h => ({ kind: h.kind, pts: h.pts, selected: selectedEdits.has(editKey(h)) }))
+  // Auto-sealed gaps ride along in the same overlay but are not in editList, so
+  // the picker never sees them: they are an output of segmentation, not an edit
+  // to be removed. Switch the feature off if you don't want them.
+  for (let i = 0; i < doc.closures.length; i += 4)
+    view.edits.push({ kind: 'closure', pts: doc.closures.slice(i, i + 4), selected: false })
   view.render()
 }
 
@@ -704,16 +736,17 @@ function boxSelectEdits(x0: number, y0: number, x1: number, y1: number, additive
 function deleteSelectedEdits() {
   if (!selectedEdits.size) return
   const keys = new Set(selectedEdits)
-  const prev = { m: doc.mergeStrokes.slice(), d: doc.deleteMarks.slice(), g: doc.groups.slice() }
+  const prev = { m: doc.mergeStrokes.slice(), p: doc.mergePairs.slice(), d: doc.deleteMarks.slice(), g: doc.groups.slice() }
   doc.mergeStrokes = doc.mergeStrokes.filter(s => !keys.has('merge:' + s.id))
+  doc.mergePairs = doc.mergePairs.filter(p => !keys.has('merge:' + p.id))
   doc.deleteMarks = doc.deleteMarks.filter(m => !keys.has('delete:' + m.id))
   doc.groups = doc.groups.filter(g => !keys.has('group:' + g.id))
-  const droppedMerge = prev.m.length !== doc.mergeStrokes.length
+  const droppedMerge = prev.m.length !== doc.mergeStrokes.length || prev.p.length !== doc.mergePairs.length
   selectedEdits.clear()
   pushUndo({
     label: 'remove edits',
     undo: () => {
-      doc.mergeStrokes = prev.m; doc.deleteMarks = prev.d; doc.groups = prev.g
+      doc.mergeStrokes = prev.m; doc.mergePairs = prev.p; doc.deleteMarks = prev.d; doc.groups = prev.g
       restoreAfterEditChange(droppedMerge)
     },
   })
@@ -811,7 +844,7 @@ function refreshView() {
 // ---------- tools ----------
 function setTool(t: Tool) {
   view.tool = t
-  mergeFirst = 0
+  mergeFirst = null
   for (const [id, tt] of [['tPan', 'pan'], ['tFill', 'fill'], ['tBarrier', 'barrier'], ['tEraser', 'eraser'], ['tMerge', 'merge'], ['tDraw', 'dmerge'], ['tDel', 'delfill'], ['tGroup', 'group'], ['tPick', 'pick']] as const)
     $(id).classList.toggle('active', tt === t)
   // picking edits you cannot see would be a guessing game
@@ -843,15 +876,21 @@ view.onClick = (fx, fy, e) => {
     selected = id
     rebuildFills(); rebuildPanel()
   } else if (view.tool === 'merge') {
-    if (!mergeFirst) { mergeFirst = id; selected = id; rebuildPanel(); status(`Merge: now click the region to merge into "${r.name}"`) }
-    else if (mergeFirst !== id) {
-      const a = doc.regions[mergeFirst], b = r
+    if (!mergeFirst) { mergeFirst = { id, x, y }; selected = id; rebuildPanel(); status(`Merge: now click the region to merge into "${r.name}"`) }
+    else if (mergeFirst.id !== id) {
+      const a = doc.regions[mergeFirst.id], b = r
       b.parent = a.id
       a.area += b.area
-      pushUndo({ label: 'merge', undo: () => { b.parent = b.id; a.area -= b.area; rebuildFills(); rebuildPanel() } })
-      mergeFirst = 0
-      status(`Merged "${b.name}" into "${a.name}"`)
-      rebuildFills(); rebuildPanel()
+      // Remembered as the two points, so a re-flat can find the regions again.
+      const pair = { id: doc.nextEdit++, ax: mergeFirst.x, ay: mergeFirst.y, bx: x, by: y }
+      doc.mergePairs.push(pair)
+      pushUndo({ label: 'merge', undo: () => {
+        doc.mergePairs.splice(doc.mergePairs.indexOf(pair), 1)
+        b.parent = b.id; a.area -= b.area; rebuildFills(); rebuildPanel(); rebuildEditView()
+      } })
+      mergeFirst = null
+      status(`Merged "${b.name}" into "${a.name}" — survives re-flatting; ⬚ removes it`)
+      rebuildFills(); rebuildPanel(); rebuildEditView()
     }
   }
 }
@@ -993,6 +1032,8 @@ function runPreviewFlat() {
     maxGap: Math.max(1, Math.round(p.gap / 4)), minArea: Math.max(4, Math.round(p.min / 16)),
     sliverW: p.sag ? 0 : Math.round(p.sliver / 4), autoMerge: !p.sag && ($<HTMLInputElement>('cMerge')).checked,
     declutter: p.decl, sagTau: p.sag ? Math.max(1, p.sag / 4) : 0,
+    // No tight-closing in the preview: at quarter res the gaps it targets are
+    // 1-2px wide, so the answer would not resemble the full-res one.
     segKey: `pv|${W4}|${p.thr}|${p.smooth}|${p.gap}|${p.sat}|${strokesVersion}|${($<HTMLInputElement>('cSkel')).checked}|${p.sag}`,
     flowKey: `pv|${W4}|${p.sat}`,
     token: tk,
@@ -1204,6 +1245,7 @@ async function loadFile(f: File) {
   doc.ink = extractInk(pixels, params().sat)
   doc.core = doc.labels = null
   doc.sag = null; doc.sagMax = 0   // stale field would be the previous image's size
+  doc.closures = []
   sagCv = ridgeCv = view.sagCv = view.ridgeCv = null
   sagLabel()
   doc.regions = []
@@ -1211,6 +1253,7 @@ async function loadFile(f: File) {
   doc.groups = []
   doc.nextGroup = 1
   doc.mergeStrokes = []
+  doc.mergePairs = []
   doc.deleteMarks = []
   doc.nextEdit = 1
   selectedEdits.clear()
@@ -1379,7 +1422,7 @@ $('sPal').oninput = () => {
   rebuildFills()
   rebuildPanel()
 }
-$('cMerge').onchange = () => { setDirty(true); scheduleQuickFlat() }
+$('cMerge').onchange = $('cHybrid').onchange = () => { setDirty(true); scheduleQuickFlat() }
 $('cSkel').onchange = () => { if (doc.src) rebuildLineCanvas(); setDirty(true); scheduleQuickFlat() }
 $('cAuto').onchange = () => { if (dirty) scheduleAutoFlat(0) }
 $('sOp').oninput = () => { view.lineOpacity = sl('sOp') / 100; view.render() }

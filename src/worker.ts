@@ -2,7 +2,7 @@ import { trappedBall, labelPockets } from './core/trappedBall.ts'
 import { GpuGrower } from './core/gpuGrow.ts'
 import { expandLabels } from './core/expand.ts'
 import { finalizeRegions, type RegionInfo } from './core/regions.ts'
-import { suggestGaps, strokeEndpoints } from './core/gaps.ts'
+import { suggestGaps, strokeEndpoints, tightClosures } from './core/gaps.ts'
 import { completionField, fieldBridges } from './core/completionField.ts'
 import { selectBridges } from './core/closure.ts'
 import { distanceTransform } from './core/morphology.ts'
@@ -38,7 +38,7 @@ function closeAndPrune(paths: number[][], labels: Int32Array | null, line: Uint8
 // parameter changes (min region, sliver, auto-merge) reuse it. The flow field
 // only depends on the ink. Keys are opaque strings built by the main thread.
 // two slots so full-res and quarter-res preview runs don't evict each other
-const segCache = new Map<string, { core: Int32Array; labels: Int32Array; sag?: { data: Uint8Array; max: number } }>()
+const segCache = new Map<string, { core: Int32Array; labels: Int32Array; sag?: { data: Uint8Array; max: number }; closures?: number[] }>()
 let flowCache: { key: string; flow: ReturnType<typeof flowField> } | null = null
 
 // Sag in px -> a byte per pixel for display, on a log ramp. Roominess spans
@@ -56,15 +56,45 @@ function sagView(sag: Float32Array): { data: Uint8Array; max: number } {
   return { data, max }
 }
 
+// 1px, 8-connected, same as the barrier pen: a closure is pinned into the
+// membrane like ink, so any extra width is roominess taken from the very areas
+// it is trying to rescue.
+function markLine(mask: Uint8Array, W: number, H: number, x0: number, y0: number, x1: number, y1: number) {
+  let x = Math.round(x0), y = Math.round(y0)
+  const ex = Math.round(x1), ey = Math.round(y1)
+  const dx = Math.abs(ex - x), dy = -Math.abs(ey - y)
+  const sx = x < ex ? 1 : -1, sy = y < ey ? 1 : -1
+  let err = dx + dy
+  for (;;) {
+    if (x >= 0 && y >= 0 && x < W && y < H) mask[y * W + x] = 1
+    if (x === ex && y === ey) break
+    const e2 = 2 * err
+    if (e2 >= dy) { err += dy; x += sx }
+    if (e2 <= dx) { err += dx; y += sy }
+  }
+}
+
 // GPU growth: lazy init; any failure permanently falls back to CPU
 let gpu: GpuGrower | null | undefined // undefined = not tried yet
 async function segment(line: Uint8Array, ink: Uint8Array, W: number, H: number, maxGap: number, useGpu: boolean,
-                       sagTau: number) {
+                       sagTau: number, hybrid: boolean) {
+  // Seal the unambiguous breaks BEFORE segmenting. The closures go into the
+  // segmentation mask only -- never into `ink`, so fills still expand across
+  // them and nothing about the drawing or the export changes.
+  let closures: number[] = []
+  if (hybrid) {
+    closures = tightClosures(line, W, H, maxGap)
+    if (closures.length) {
+      line = line.slice()
+      for (let i = 0; i < closures.length; i += 4)
+        markLine(line, W, H, closures[i], closures[i + 1], closures[i + 2], closures[i + 3])
+    }
+  }
   // Rubber sheet: one membrane solve replaces the whole radius ladder, and the
   // regions come out of the field's topology rather than out of flood order.
   if (sagTau > 0) {
     const { core, sag } = sagSegment(line, W, H, sagTau, maxGap)
-    return { core, labels: expandLabels(core, W, H, ink), sag: sagView(sag) }
+    return { core, labels: expandLabels(core, W, H, ink), sag: sagView(sag), closures }
   }
   if (useGpu && gpu === undefined) gpu = await GpuGrower.create()
   if (useGpu && gpu) {
@@ -73,13 +103,13 @@ async function segment(line: Uint8Array, ink: Uint8Array, W: number, H: number, 
       const core = await gpu.grow(seeds, line, ink, W, H)   // leftover attachment
       labelPockets(core, line, W, H)
       const labels = await gpu.grow(core.slice(), null, ink, W, H) // under-line expansion
-      return { core, labels }
+      return { core, labels, closures }
     } catch {
       gpu = null // device lost or unsupported op: CPU from now on
     }
   }
   const { core } = trappedBall(line, W, H, maxGap, ink)
-  return { core, labels: expandLabels(core, W, H, ink) }
+  return { core, labels: expandLabels(core, W, H, ink), closures }
 }
 
 onmessage = async (e: MessageEvent) => {
@@ -88,15 +118,17 @@ onmessage = async (e: MessageEvent) => {
     const line = new Uint8Array(m.line)
     const ink = new Uint8Array(m.ink)
     let core: Int32Array, labels: Int32Array, sag: { data: Uint8Array; max: number } | undefined
+    let closures: number[] | undefined
     const hit = segCache.get(m.segKey)
     if (hit) {
       core = hit.core.slice()
       labels = hit.labels.slice()
       sag = hit.sag
+      closures = hit.closures
     } else {
-      ;({ core, labels, sag } = await segment(line, ink, m.W, m.H, m.maxGap,
-        !!m.useGpu && m.W * m.H > 2e6, m.sagTau ?? 0))
-      segCache.set(m.segKey, { core: core.slice(), labels: labels.slice(), sag })
+      ;({ core, labels, sag, closures } = await segment(line, ink, m.W, m.H, m.maxGap,
+        !!m.useGpu && m.W * m.H > 2e6, m.sagTau ?? 0, !!m.hybrid))
+      segCache.set(m.segKey, { core: core.slice(), labels: labels.slice(), sag, closures })
       for (const k of segCache.keys()) { if (segCache.size <= 2) break; segCache.delete(k) }
     }
     let { regions } = finalizeRegions(core, labels, m.W, m.H, m.minArea)
@@ -121,6 +153,7 @@ onmessage = async (e: MessageEvent) => {
     // the sag field is cached, so hand out a copy rather than transferring it
     const sagOut = sag ? sag.data.slice() : null
     postMessage({ t: 'flat', core: core.buffer, labels: labels.buffer, regions, paths,
+      closures: closures ?? [],
       sag: sagOut?.buffer ?? null, sagMax: sag?.max ?? 0, token: m.token },
       { transfer: sagOut ? [core.buffer, labels.buffer, sagOut.buffer] : [core.buffer, labels.buffer] })
   } else if (m.t === 'carve') {

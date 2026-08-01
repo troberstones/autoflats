@@ -11,7 +11,16 @@ interface Ep { i: number; x: number; y: number; branch: Set<number>; dx: number;
 // Skeleton stroke tips with outward unit tangents (dx,dy point out of the tip,
 // into the gap). Shared by suggestGaps and the completion field. `wd` is the
 // stroke half-width transform (similarity cue); `sk` the 1px skeleton.
-function extractEndpoints(line: Uint8Array, W: number, H: number, maxBridge: number): { info: Ep[]; wd: Int32Array; sk: Uint8Array } {
+// keepSpurs: a tip whose branch forks a few steps in is normally dropped as
+// skeleton noise, but at a real break the OTHER side of the gap is often close
+// enough to fork the skeleton right behind the tip -- so the filter throws away
+// one tip of a genuine pair and the gap can never be closed. Measured on
+// LineartCircles1: 16 raw tips, 8 gaps, and isSpur left only one tip on four of
+// them. suggestGaps keeps the filter (it also pairs tip->stroke, so it survives
+// losing one side); the tight-closure pass cannot, and compensates with its own
+// much stricter cone, bend and openness tests.
+function extractEndpoints(line: Uint8Array, W: number, H: number, maxBridge: number,
+                          keepSpurs = false): { info: Ep[]; wd: Int32Array; sk: Uint8Array } {
   const inv = new Uint8Array(W * H)
   for (let i = 0; i < inv.length; i++) inv[i] = line[i] ? 0 : 1
   const wd = distanceTransform(inv, W, H)
@@ -19,7 +28,7 @@ function extractEndpoints(line: Uint8Array, W: number, H: number, maxBridge: num
 
   const eps: number[] = []
   for (let i = 0; i < sk.length; i++) {
-    if (sk[i] && skNbrCount(sk, i, W) <= 1 && !isSpur(sk, i, W)) eps.push(i)
+    if (sk[i] && skNbrCount(sk, i, W) <= 1 && (keepSpurs || !isSpur(sk, i, W))) eps.push(i)
   }
   if (eps.length > 4000) eps.length = 4000
 
@@ -220,3 +229,89 @@ function nearestForeignLine(line: Uint8Array, sk: Uint8Array, A: { x: number; y:
   return -1
 }
 
+
+// ---------- tight closures ----------
+// A different question from suggestGaps. That one asks "where might the artist
+// have left a gap?" and answers generously, because a human reviews the list.
+// This one asks "which gaps are so obviously gaps that we can close them
+// unreviewed, before segmenting at all?" -- so it is deliberately mean.
+//
+// It exists because the rubber sheet places a boundary on a CREST, not across
+// an opening. Where a silhouette is broken the crest runs inward along the
+// shape's axis instead of over the break, which both puts the wall in the wrong
+// place and leaves the area's basin merged with whatever floods in. Sealing the
+// break first sidesteps the whole problem: the sheet then sees a closed shape,
+// so the basin is real and the crest lands on the artist's line.
+//
+// "Short and tight" is three tests, all of which must pass:
+//   short   the two tips are within maxBridge of each other, and among the
+//           candidates the shortest/straightest are taken first;
+//   tight   they face each other inside a 45-degree cone with at most 60
+//           degrees of total bend (suggestGaps allows 60/90) -- a pair that has
+//           to swing to meet is a guess, and guesses are what the review list
+//           is for;
+//   open    the straight run between them is blank paper. If there is ink in
+//           the middle the two tips are already joined by something, and what
+//           looks like a gap is the far side of a curve.
+// One closure per tip, best-first, so nothing gets fanned out to three
+// neighbours.
+const TIGHT_CONE = 0.7    // cos, ~45 degrees off the chord
+const TIGHT_BEND = 60     // degrees of total turn allowed across the join
+
+// Is the chord's interior free of ink? The tips are SKELETON points, sitting on
+// the centreline half a stroke deep in their own ink, so every chord starts and
+// ends inside ink and that part has to be skipped before the question means
+// anything. A fixed skip cannot do it: a blunt stroke end cut at an angle to the
+// chord reaches much further along it than the stroke's half-width, which is why
+// this rejected the horn-tip gap on LineartCircles1 (tips 11px apart, half-width
+// 3 and 4, and still ink at step 5).
+//
+// So skip each end's OWN ink run instead of guessing a distance: walk in from
+// both ends while the chord is inked, and require what is left in the middle to
+// be blank. If the two runs meet there was never a gap -- the tips are joined by
+// ink and what looks like a break is the far side of a curve.
+function crossingIsOpen(line: Uint8Array, W: number, H: number,
+                        x1: number, y1: number, x2: number, y2: number): boolean {
+  const steps = Math.ceil(Math.hypot(x2 - x1, y2 - y1))
+  if (steps < 2) return false
+  // 1 = ink, 0 = paper, -1 = off the image (never acceptable in a closure)
+  const at = (s: number): number => {
+    const x = Math.round(x1 + (x2 - x1) * s / steps), y = Math.round(y1 + (y2 - y1) * s / steps)
+    return x < 0 || y < 0 || x >= W || y >= H ? -1 : line[y * W + x] ? 1 : 0
+  }
+  let a = 0, b = steps
+  while (a <= steps && at(a) === 1) a++
+  while (b >= 0 && at(b) === 1) b--
+  if (a > b) return false
+  for (let s = a; s <= b; s++) if (at(s) !== 0) return false
+  return true
+}
+
+export function tightClosures(line: Uint8Array, W: number, H: number, maxGap: number): number[] {
+  const maxBridge = Math.max(6, maxGap * 2 + 4)
+  const { info, wd } = extractEndpoints(line, W, H, maxBridge, true)
+  const pairs: Array<[number, number, number]> = []
+  for (let a = 0; a < info.length; a++) {
+    for (let b = a + 1; b < info.length; b++) {
+      const A = info[a], B = info[b]
+      const d = Math.hypot(A.x - B.x, A.y - B.y)
+      if (d > maxBridge || d < 2) continue
+      if (A.branch.has(B.i)) continue                     // same stroke, already joined
+      const wa = wd[A.i], wb = wd[B.i]
+      if (Math.max(wa, wb) > 2.5 * Math.min(wa, wb) + 3) continue
+      const rel = relatable(A.x, A.y, A.dx, A.dy, B.x, B.y, B.dx, B.dy, TIGHT_CONE, TIGHT_BEND)
+      if (!rel.ok) continue
+      if (!crossingIsOpen(line, W, H, A.x, A.y, B.x, B.y)) continue
+      pairs.push([rel.energy, a, b])
+    }
+  }
+  pairs.sort((p, q) => p[0] - q[0])
+  const used = new Set<number>()
+  const segs: number[] = []
+  for (const [, a, b] of pairs) {
+    if (used.has(a) || used.has(b)) continue
+    used.add(a); used.add(b)
+    segs.push(info[a].x, info[a].y, info[b].x, info[b].y)
+  }
+  return segs
+}

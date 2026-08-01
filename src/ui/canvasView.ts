@@ -5,8 +5,12 @@ const STROKE_COLORS: Record<string, string> = { barrier: '#39f', eraser: '#f66',
 // A remembered edit, drawn back on the canvas so it can be picked and removed.
 // Colours match the tool that made it, so the overlay reads as "here is the
 // stroke you drew" rather than as a new kind of annotation.
-export interface EditDraw { kind: 'merge' | 'delete' | 'group'; pts: number[]; selected: boolean }
-const EDIT_COLORS: Record<EditDraw['kind'], string> = { merge: '#4f4', delete: '#f66', group: '#fc0' }
+export interface EditDraw { kind: 'merge' | 'delete' | 'group' | 'closure'; pts: number[]; selected: boolean }
+// 'closure' is draw-only: an auto-sealed gap is not a user edit, so it is shown
+// but never picked. Magenta, and NOT teal: the ridge overlay owns cyan, the two
+// are routinely on together, and a colour that close made auto-closures and
+// open ridges impossible to tell apart.
+const EDIT_COLORS: Record<EditDraw['kind'], string> = { merge: '#4f4', delete: '#f66', group: '#fc0', closure: '#f2f' }
 
 export class CanvasView {
   ctx: CanvasRenderingContext2D
