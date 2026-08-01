@@ -145,7 +145,7 @@ export function hasFfmpeg(): boolean {
   return ffmpegOk
 }
 
-export const SAMPLES = ['Lineart1', 'Lineart2', 'Lineart3', 'Lineart4', 'Lineart5', 'Lineart6_notclean']
+export const SAMPLES = ['Lineart1', 'Lineart2', 'Lineart3', 'Lineart4', 'Lineart4_crop', 'Lineart5', 'Lineart6_notclean']
 
 export function loadSample(name: string): { W: number; H: number; data: Uint8ClampedArray } {
   const root = new URL('..', import.meta.url).pathname
