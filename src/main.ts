@@ -191,6 +191,34 @@ function sagLabel() {
   $('vSagView').textContent = has ? `(0–${Math.round(doc.sagMax)}px)` : '(needs Rubber sheet)'
 }
 
+// Controls the rubber sheet makes inert. Measured across the six samples with
+// sag at tau 6: sliver merging moves 0-2 fills (persistence already dissolves
+// corridors), auto-merge finds 0-1 leaks where the trapped ball finds 7-30
+// (the ink-justification test got there first), and the GPU flag is not even
+// reachable -- segment() returns before that branch when sagTau > 0.
+//
+// They are greyed rather than hidden so the bar does not reflow, and disabled
+// so the greying is not a lie. The parameters are forced inert to match: a
+// control that looks switched off must actually be switched off.
+//
+// Declutter stays: it is much less load-bearing under sag but still worth up to
+// 22 fills. Completion field stays too -- it ranks endpoint bridges from the ink
+// alone, so it behaves the same either way.
+const SAG_INERT: Array<[string, string]> = [['lSliv', 'sSliv'], ['lMerge', 'cMerge'], ['lGpu', 'cGpu']]
+const INERT_WHY = 'Not used by the rubber sheet — its work is already done by the sag field. Set Rubber sheet to 0 to re-enable.'
+const originalTitles = new Map<string, string>()
+
+function syncSagUI() {
+  const off = sl('sSag') > 0
+  for (const [labelId, inputId] of SAG_INERT) {
+    const label = $(labelId), input = $<HTMLInputElement>(inputId)
+    if (!originalTitles.has(labelId)) originalTitles.set(labelId, label.title)
+    label.classList.toggle('off', off)
+    input.disabled = off
+    label.title = off ? INERT_WHY : originalTitles.get(labelId)!
+  }
+}
+
 function refreshOverlays() {
   const sagOn = ($<HTMLInputElement>('cSagView')).checked
   const ridgeOn = ($<HTMLInputElement>('cRidge')).checked
@@ -405,11 +433,11 @@ function runFlat(matchOld: boolean) {
   const p = params()
   worker().postMessage({
     t: 'flat', line: line.buffer, ink: ink.buffer, W: doc.W, H: doc.H,
-    maxGap: p.gap, minArea: p.min, sliverW: p.sliver, autoMerge: ($<HTMLInputElement>('cMerge')).checked,
+    maxGap: p.gap, minArea: p.min, sliverW: p.sag ? 0 : p.sliver, autoMerge: !p.sag && ($<HTMLInputElement>('cMerge')).checked,
     declutter: p.decl, sagTau: p.sag,
     segKey: `${doc.W}|${p.thr}|${p.smooth}|${p.gap}|${p.sat}|${strokesVersion}|${($<HTMLInputElement>('cSkel')).checked}|${p.sag}|${($<HTMLInputElement>('cGpu')).checked}`,
     flowKey: `${doc.W}|${p.sat}`,
-    useGpu: ($<HTMLInputElement>('cGpu')).checked,
+    useGpu: !p.sag && ($<HTMLInputElement>('cGpu')).checked,  // sag never reaches the GPU branch
     token: tk,
   }, [line.buffer, ink.buffer])
 }
@@ -900,7 +928,7 @@ function runPreviewFlat() {
   worker().postMessage({
     t: 'flat', line: line4.buffer, ink: ink4.buffer, W: W4, H: H4,
     maxGap: Math.max(1, Math.round(p.gap / 4)), minArea: Math.max(4, Math.round(p.min / 16)),
-    sliverW: Math.round(p.sliver / 4), autoMerge: ($<HTMLInputElement>('cMerge')).checked,
+    sliverW: p.sag ? 0 : Math.round(p.sliver / 4), autoMerge: !p.sag && ($<HTMLInputElement>('cMerge')).checked,
     declutter: p.decl, sagTau: p.sag ? Math.max(1, p.sag / 4) : 0,
     segKey: `pv|${W4}|${p.thr}|${p.smooth}|${p.gap}|${p.sat}|${strokesVersion}|${($<HTMLInputElement>('cSkel')).checked}|${p.sag}`,
     flowKey: `pv|${W4}|${p.sat}`,
@@ -1258,6 +1286,7 @@ const sliderLive = () => {
   $('vPal').textContent = sl('sPal') ? '' + sl('sPal') : 'unique'
   $('vDecl').textContent = sl('sDecl') ? '' + sl('sDecl') : 'off'
   $('vSag').textContent = sl('sSag') ? sl('sSag') + 'px' : 'off'
+  syncSagUI()
 }
 let pvTimer = 0
 let lastSat = -1
