@@ -1,4 +1,7 @@
 export type Tool = 'pan' | 'fill' | 'barrier' | 'eraser' | 'merge' | 'dmerge' | 'delfill' | 'group' | 'pick'
+// Press-to-release travel, in client px, below which a drag still counts as a
+// click rather than a stroke or a box-select.
+const MOVE_SLOP = 6
 const STROKE_TOOLS: Tool[] = ['barrier', 'eraser', 'dmerge', 'group']
 const STROKE_COLORS: Record<string, string> = { barrier: '#39f', eraser: '#f66', dmerge: '#4f4', group: '#fc0' }
 
@@ -37,6 +40,12 @@ export class CanvasView {
   onClick: ((x: number, y: number, e: PointerEvent) => void) | null = null
   onStroke: ((pts: number[]) => void) | null = null
   onBox: ((x0: number, y0: number, x1: number, y1: number, additive: boolean) => void) | null = null
+  onCancel: (() => void) | null = null
+  // The merge tool's first click, in image space, and the live cursor: drawn as
+  // a rubber band so a half-finished merge is visible rather than being invisible
+  // state you find out about by clicking somewhere unrelated.
+  mergeAnchor: [number, number] | null = null
+  private mergeCursor: [number, number] | null = null
 
   private space = false
   private panning = false
@@ -46,6 +55,10 @@ export class CanvasView {
   private ly = 0
   private moved = false
   private autoFit = true // keep re-fitting on resize until the user zooms/pans
+  // Touch navigates, it never draws (see the pointerdown handler). Live touches
+  // are tracked so two of them can pinch; a pen or mouse never lands here.
+  private touches = new Map<number, { x: number; y: number }>()
+  private pinch: { d: number; cx: number; cy: number } | null = null
 
   constructor(public canvas: HTMLCanvasElement) {
     this.ctx = canvas.getContext('2d')!
@@ -74,9 +87,27 @@ export class CanvasView {
     }, { passive: false })
 
     canvas.addEventListener('pointerdown', e => {
-      canvas.setPointerCapture(e.pointerId)
+      // Before the capture: a right-click cancels what is half-finished and is
+      // over immediately, so there is nothing to capture the pointer for.
+      if (e.button === 2) { this.cancelPending(); return }
+      // Capture is an optimisation -- it keeps a drag alive when the cursor
+      // leaves the canvas -- and it throws for a pointer the browser does not
+      // consider active. Unguarded, that throw took the whole handler with it
+      // and the input stopped working entirely, so it must not be able to.
+      try { canvas.setPointerCapture(e.pointerId) } catch { /* not capturable */ }
       this.moved = false
       this.lx = e.clientX; this.ly = e.clientY
+      // Touch is navigation only: one finger pans, two pinch, and no tool ever
+      // fires. A finger is far too imprecise to place a barrier or a merge, and
+      // a tablet user has a pen for that -- which arrives as 'pen' and takes the
+      // ordinary path below.
+      if (e.pointerType === 'touch') {
+        this.touches.set(e.pointerId, { x: e.clientX, y: e.clientY })
+        this.stroke = null; this.box = null
+        if (this.touches.size >= 2) { this.panning = false; this.pinch = this.pinchState() }
+        else this.panning = true
+        return
+      }
       if (e.button === 1 || this.space || this.tool === 'pan') { this.panning = true; return }
       if (this.tool === 'pick') {
         const [x, y] = this.toImage(e)
@@ -90,8 +121,20 @@ export class CanvasView {
       }
     })
     canvas.addEventListener('pointermove', e => {
+      if (e.pointerType === 'touch') {
+        if (!this.touches.has(e.pointerId)) return
+        this.touches.set(e.pointerId, { x: e.clientX, y: e.clientY })
+        if (this.touches.size >= 2) { this.applyPinch(); return }
+      }
       const dx = e.clientX - this.lx, dy = e.clientY - this.ly
-      if (Math.abs(dx) + Math.abs(dy) > 2) this.moved = true
+      // 2px was too tight to click through: an ordinary hand tremor between
+      // press and release passed it, `moved` latched, and the click was silently
+      // dropped -- which is what made the merge tool feel like it ignored you.
+      if (Math.abs(dx) + Math.abs(dy) > MOVE_SLOP) this.moved = true
+      if (this.mergeAnchor && !this.panning) {
+        this.mergeCursor = this.toImage(e)
+        this.render()
+      }
       if (this.panning) {
         this.autoFit = false
         this.ox += dx * devicePixelRatio
@@ -108,7 +151,19 @@ export class CanvasView {
         this.render()
       }
     })
+    const endTouch = (e: PointerEvent) => {
+      if (!this.touches.delete(e.pointerId)) return false
+      this.pinch = this.touches.size >= 2 ? this.pinchState() : null
+      // Dropping to one finger resumes panning from where that finger is, so a
+      // pinch that ends unevenly does not jump the image.
+      const last = [...this.touches.values()][0]
+      if (last) { this.panning = true; this.lx = last.x; this.ly = last.y }
+      else this.panning = false
+      return true
+    }
+    canvas.addEventListener('pointercancel', e => { endTouch(e) })
     canvas.addEventListener('pointerup', e => {
+      if (e.pointerType === 'touch') { endTouch(e); return }
       if (this.panning) { this.panning = false; return }
       if (this.stroke) {
         const s = this.stroke
@@ -126,13 +181,54 @@ export class CanvasView {
         }
         // barely moved: treat as an individual pick, handled by onClick below
       }
-      if (!this.moved && this.onClick) {
+      // The merge tool tracks a rubber band between two clicks, so its second
+      // click arrives after real cursor travel by design -- and a press-drag-
+      // release onto the target has to land too.
+      if ((!this.moved || this.tool === 'merge') && this.onClick) {
         const [x, y] = this.toImage(e)
         this.onClick(x, y, e)
       }
     })
+    // Right-click is a cancel gesture here, so never let the browser menu eat it.
+    canvas.addEventListener('contextmenu', e => e.preventDefault())
+    // Clicking anywhere outside the canvas abandons a half-finished merge: the
+    // rubber band would otherwise still be armed when you came back.
+    addEventListener('pointerdown', e => {
+      if (this.mergeAnchor && e.target !== canvas) this.cancelPending()
+    }, true)
     addEventListener('keydown', e => { if (e.code === 'Space' && !(e.target instanceof HTMLInputElement)) { this.space = true; e.preventDefault() } })
     addEventListener('keyup', e => { if (e.code === 'Space') this.space = false })
+  }
+
+  // Cancel anything half-finished: an armed merge, a stroke, a selection box.
+  cancelPending() {
+    const had = !!(this.mergeAnchor || this.stroke || this.box)
+    this.mergeAnchor = this.mergeCursor = null
+    this.stroke = null
+    this.box = null
+    if (had) { this.render(); this.onCancel?.() }
+  }
+
+  private pinchState() {
+    const [a, b] = [...this.touches.values()]
+    return { d: Math.hypot(b.x - a.x, b.y - a.y) || 1, cx: (a.x + b.x) / 2, cy: (a.y + b.y) / 2 }
+  }
+
+  // Two fingers: scale about the midpoint and translate by how far the midpoint
+  // moved, so the image tracks the fingers instead of the zoom fighting the pan.
+  private applyPinch() {
+    const now = this.pinchState()
+    const was = this.pinch
+    this.pinch = now
+    if (!was) return
+    this.autoFit = false
+    const r = this.canvas.getBoundingClientRect()
+    const cx = (now.cx - r.left) * devicePixelRatio, cy = (now.cy - r.top) * devicePixelRatio
+    const ns = Math.min(32, Math.max(0.03, this.scale * (now.d / was.d)))
+    this.ox = cx - (cx - this.ox) * (ns / this.scale) + (now.cx - was.cx) * devicePixelRatio
+    this.oy = cy - (cy - this.oy) * (ns / this.scale) + (now.cy - was.cy) * devicePixelRatio
+    this.scale = ns
+    this.render()
   }
 
   toImage(e: { clientX: number; clientY: number }): [number, number] {
@@ -242,6 +338,23 @@ export class CanvasView {
         ctx.fillStyle = 'rgba(255,204,0,0.18)'
         ctx.fill()
       }
+      ctx.stroke()
+    }
+    // Merge rubber band: anchored on the first click, following the cursor, in
+    // the same green the finished merge is drawn in.
+    if (this.mergeAnchor) {
+      const [ax, ay] = this.mergeAnchor
+      const [bx, by] = this.mergeCursor ?? this.mergeAnchor
+      const r = 5 / this.scale
+      ctx.setLineDash([7 / this.scale, 5 / this.scale])
+      ctx.strokeStyle = '#4f4'
+      ctx.lineWidth = 2 / this.scale
+      ctx.beginPath()
+      ctx.moveTo(ax, ay); ctx.lineTo(bx, by)
+      ctx.stroke()
+      ctx.setLineDash([])
+      ctx.beginPath()
+      ctx.arc(ax, ay, r, 0, 7)
       ctx.stroke()
     }
     // gap suggestions: white halo + orange curve, constant screen-space width

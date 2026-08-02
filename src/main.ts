@@ -845,6 +845,7 @@ function refreshView() {
 function setTool(t: Tool) {
   view.tool = t
   mergeFirst = null
+  view.mergeAnchor = null
   for (const [id, tt] of [['tPan', 'pan'], ['tFill', 'fill'], ['tBarrier', 'barrier'], ['tEraser', 'eraser'], ['tMerge', 'merge'], ['tDraw', 'dmerge'], ['tDel', 'delfill'], ['tGroup', 'group'], ['tPick', 'pick']] as const)
     $(id).classList.toggle('active', tt === t)
   // picking edits you cannot see would be a guessing game
@@ -876,8 +877,12 @@ view.onClick = (fx, fy, e) => {
     selected = id
     rebuildFills(); rebuildPanel()
   } else if (view.tool === 'merge') {
-    if (!mergeFirst) { mergeFirst = { id, x, y }; selected = id; rebuildPanel(); status(`Merge: now click the region to merge into "${r.name}"`) }
-    else if (mergeFirst.id !== id) {
+    if (!mergeFirst) {
+      mergeFirst = { id, x, y }
+      view.mergeAnchor = [x, y]
+      selected = id; rebuildPanel(); view.render()
+      status(`Merge: now click the region to merge into "${r.name}" — Esc, right-click or a click off the canvas cancels`)
+    } else if (mergeFirst.id !== id) {
       const a = doc.regions[mergeFirst.id], b = r
       b.parent = a.id
       a.area += b.area
@@ -889,6 +894,7 @@ view.onClick = (fx, fy, e) => {
         b.parent = b.id; a.area -= b.area; rebuildFills(); rebuildPanel(); rebuildEditView()
       } })
       mergeFirst = null
+      view.mergeAnchor = null
       status(`Merged "${b.name}" into "${a.name}" — survives re-flatting; ⬚ removes it`)
       rebuildFills(); rebuildPanel(); rebuildEditView()
     }
@@ -923,6 +929,15 @@ function carveAt(idx: number) {
 }
 
 view.onBox = (x0, y0, x1, y1, additive) => { if (view.tool === 'pick') boxSelectEdits(x0, y0, x1, y1, additive) }
+
+// Esc / right-click / a click off the canvas: drop the armed merge.
+view.onCancel = () => {
+  if (!mergeFirst) return
+  mergeFirst = null
+  selected = 0
+  rebuildPanel()
+  status('Merge cancelled')
+}
 
 view.onStroke = pts => {
   if (!doc.src) return
@@ -1369,6 +1384,7 @@ addEventListener('keydown', e => {
     return
   }
   if ((e.key === 'Delete' || e.key === 'Backspace') && selectedEdits.size) { e.preventDefault(); deleteSelectedEdits(); return }
+  if (e.key === 'Escape' && mergeFirst) { view.cancelPending(); return }
   if (e.key === 'Escape' && selectedEdits.size) { selectedEdits.clear(); rebuildEditView(); status(''); return }
   const k = e.key.toLowerCase()
   if (k === 'v') setTool('pan')
@@ -1473,6 +1489,10 @@ addEventListener('unhandledrejection', e => {
 })
 
 setTool('pan')
+// The controls carry non-trivial defaults now (rubber sheet on, min region 0),
+// so sync the readouts and the sag greying to the markup rather than to what
+// the markup used to say.
+sliderLive()
 sagLabel()
 if ((navigator as any).gpu) $('lGpu').hidden = false
 // automation/test hooks

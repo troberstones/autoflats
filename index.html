@@ -54,8 +54,8 @@
     <span id="badge">● changes need Re-Flat</span>
     <button id="bExport" disabled>Export PSD</button>
     <select id="expMode" title="How fills become PSD layers">
-      <option value="color">one layer per color</option>
-      <option value="region" selected>one layer per fill</option>
+      <option value="color" selected>one layer per color</option>
+      <option value="region">one layer per fill</option>
       <option value="flat">single flat layer</option>
     </select>
     <label class="s">Fill color <input type="color" id="curColor" value="#c8e0f0"></label>
@@ -67,7 +67,7 @@
     <button id="tFill"    title="Fill / recolor region (B). Click background to carve a new fill. Alt-click: pick color">🪣</button>
     <button id="tBarrier" title="Barrier pen (G): draw invisible gap-closing lines">🖊</button>
     <button id="tEraser"  title="Barrier eraser (E)">🧽</button>
-    <button id="tMerge"   title="Merge regions (M): click two regions — the second merges into the first. Remembered as the two points you clicked, so it survives re-flatting; shown in green with the Edits overlay and removable with ⬚.">⧉</button>
+    <button id="tMerge"   title="Merge regions (M): click one region, then click the region to merge into it — a rubber band follows the cursor in between. Esc, right-click or a click off the canvas cancels. Remembered as the two points you clicked, so it survives re-flatting; shown in green with the Edits overlay and removable with ⬚.">⧉</button>
     <button id="tDraw"    title="Draw merge (D): stroke from a fill — every fill the stroke crosses merges into it">🧲</button>
     <button id="tDel"     title="Delete fill (X): click a fill to remove it — it stops rendering and is left out of the PSD. Survives re-flatting; ⌘Z restores">🗑</button>
     <button id="tGroup"   title="Group fills (R): lasso around or a stroke through a set of fills — they export as a PSD folder and the group survives re-flatting">🔗</button>
@@ -76,20 +76,20 @@
   <div id="wrap"><canvas id="view"></canvas></div>
   <div id="layers"></div>
   <div id="ctrl">
-    <label class="s">Line threshold <input type="range" id="sThr" min="5" max="90" value="25"><span id="vThr">25%</span></label>
+    <label class="s">Line threshold <input type="range" id="sThr" min="5" max="90" value="5"><span id="vThr">5%</span></label>
     <label class="s">Color reject <input type="range" id="sSat" min="5" max="100" value="30"><span id="vSat">30%</span></label>
     <label class="s">Smoothing <input type="range" id="sSm" min="0" max="4" value="1"><span id="vSm">1px</span></label>
     <label class="s" title="Erode lines to a 1px skeleton before filling, so gap size &amp; matching ignore stroke thickness"><input type="checkbox" id="cSkel"> Skeletonize</label>
     <label class="s">Gap size <input type="range" id="sGap" min="1" max="32" value="8"><span id="vGap">8px</span></label>
-    <label class="s" id="lMin">Min region <input type="range" id="sMin" min="0" max="500" value="150"><span id="vMin">150px²</span></label>
+    <label class="s" id="lMin">Min region <input type="range" id="sMin" min="0" max="500" value="0"><span id="vMin">0px²</span></label>
     <label class="s" title="Assign fills from a palette of this many colors, so neighbouring fills never share one. Groups the layers panel and enables one-layer-per-color export. 0 = a unique color per fill.">Colors <input type="range" id="sPal" min="0" max="32" value="0"><span id="vPal">unique</span></label>
-    <label class="s" title="Segment by hanging the drawing like a rubber sheet and taking the sagging valleys as fills, instead of rolling a ball. Higher = only deeper valleys count as their own fill. 0 = off (trapped ball).">Rubber sheet <input type="range" id="sSag" min="0" max="30" value="0"><span id="vSag">off</span></label>
+    <label class="s" title="Segment by hanging the drawing like a rubber sheet and taking the sagging valleys as fills, instead of rolling a ball. Higher = only deeper valleys count as their own fill. 0 = off (trapped ball).">Rubber sheet <input type="range" id="sSag" min="0" max="30" value="2"><span id="vSag">2px</span></label>
     <label class="s" id="lSliv" title="Merge fills thinner than this everywhere — the space between parallel/double strokes. 0 = off">Sliver width <input type="range" id="sSliv" min="0" max="8" value="3"><span id="vSliv">3px</span></label>
     <label class="s" id="lDecl" title="Absorb small fills squeezed between strokes in busy line work (hatching, texture, folds) into the area they shade. Higher = more aggressive. 0 = off">Declutter <input type="range" id="sDecl" min="0" max="100" value="50"><span id="vDecl">50</span></label>
     <label class="s" id="lMerge" title="Merge fill fragments whose shared border crosses open space against the stroke flow"><input type="checkbox" id="cMerge" checked> Auto-merge leaks</label>
-    <label class="s" title="Before segmenting, seal the breaks that are past arguing about: two open stroke ends within reach of each other, facing each other head-on, with nothing but blank paper between them. Each gets a 1px invisible bridge, so an area the artist meant to close is already closed when the rubber sheet arrives — which puts the boundary on the drawn line instead of on a crease inside the shape. Never exported. Closed gaps are drawn in green with the Edits overlay."><input type="checkbox" id="cHybrid"> Close tight gaps</label>
+    <label class="s" title="Before segmenting, seal the breaks that are past arguing about: two open stroke ends within reach of each other, facing each other head-on, with nothing but blank paper between them. Each gets a 1px invisible bridge, so an area the artist meant to close is already closed when the rubber sheet arrives — which puts the boundary on the drawn line instead of on a crease inside the shape. Never exported. Closed gaps are drawn in green with the Edits overlay."><input type="checkbox" id="cHybrid" checked> Close tight gaps</label>
     <label class="s" title="Rank gap bridges by a stochastic completion field (Williams &amp; Jacobs): tips link only where the field diffuses a smooth connecting contour between them. Used by Suggest Gaps."><input type="checkbox" id="cField"> Completion field</label>
-    <label class="s" title="Re-flat automatically after tuning a parameter"><input type="checkbox" id="cAuto"> Auto re-flat</label>
+    <label class="s" title="Re-flat automatically after tuning a parameter"><input type="checkbox" id="cAuto" checked> Auto re-flat</label>
     <label class="s" title="Automatically bridge suggested gaps after flatting. Each suggestion is already proven to close a fill, so this is safe to leave on; ⌘Z undoes a round."><input type="checkbox" id="cBridge"> Auto-bridge gaps</label>
     <label class="s" id="lGpu" title="Run the growth stages on the GPU (WebGPU); falls back to CPU automatically" hidden><input type="checkbox" id="cGpu" checked> GPU</label>
     <label class="s">Line opacity <input type="range" id="sOp" min="0" max="100" value="100"></label>
