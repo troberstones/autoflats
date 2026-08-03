@@ -75,7 +75,13 @@ Needs a browser with module workers (Safari 15+, Chrome 80+, Firefox 114+).
 
 ## Tablet / touch
 
-Touch is navigation only — one finger pans, two pinch to zoom — and never
-activates a tool. A finger is too imprecise to place a barrier or pick a region,
+Touch is navigation only — one finger pans, and two fingers pinch to zoom and
+twist to rotate at the same time — and it never activates a tool. A finger is too imprecise to place a barrier or pick a region,
 and a stray palm would otherwise draw. Use a pen (which arrives as a separate
 pointer type) or a mouse for the tools; both behave exactly as they always did.
+
+The layout tracks the window: the control bar wraps to as many rows as it needs
+and scrolls past a third of the height rather than squeezing the canvas, the
+layers panel scales with the viewport, and heights use dvh so nothing hides
+behind Safari's chrome. Rotation is view-only — it never touches the image or
+the export — and Fit resets it.

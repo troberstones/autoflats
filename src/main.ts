@@ -1283,9 +1283,9 @@ async function loadFile(f: File) {
   lineCv = document.createElement('canvas'); lineCv.width = doc.W; lineCv.height = doc.H
   barrierCv = document.createElement('canvas'); barrierCv.width = doc.W; barrierCv.height = doc.H
   barrierCtx = barrierCv.getContext('2d')!
-  // scale min-region default with resolution (~190 px² at 5.6 MP)
-  ;($('sMin') as HTMLInputElement).value = '' + Math.min(500, Math.max(50, Math.round(doc.W * doc.H / 30000)))
-  $('vMin').textContent = ($('sMin') as HTMLInputElement).value + 'px²'
+  // Min region is left alone on open. It used to be rewritten to a
+  // resolution-scaled value (>= 50 px²) every time a file loaded, which quietly
+  // overrode the 0 default and any figure the user had dialled in.
   view.imgW = doc.W; view.imgH = doc.H
   view.fills = null; view.lineCv = lineCv; view.barrierCv = barrierCv
   rebuildLineCanvas()
@@ -1366,8 +1366,7 @@ function focusSeg(dir: number) {
   const mid = (p.length >> 2) << 1
   const mx = p[mid], my = p[mid + 1]
   if (view.scale < 1) view.scale = 1.5
-  view.ox = view.canvas.width / 2 - mx * view.scale
-  view.oy = view.canvas.height / 2 - my * view.scale
+  view.centerOn(mx, my)
   view.render()
   status(`Gap ${view.segFocus + 1}/${n} — Enter to bridge, Tab for next`)
 }

@@ -20,6 +20,7 @@ export class CanvasView {
   scale = 1
   ox = 0
   oy = 0
+  rot = 0   // radians, applied about the image origin before the translation
   tool: Tool = 'pan'
   fills: HTMLCanvasElement | null = null
   lineCv: HTMLCanvasElement | null = null
@@ -58,7 +59,7 @@ export class CanvasView {
   // Touch navigates, it never draws (see the pointerdown handler). Live touches
   // are tracked so two of them can pinch; a pen or mouse never lands here.
   private touches = new Map<number, { x: number; y: number }>()
-  private pinch: { d: number; cx: number; cy: number } | null = null
+  private pinch: { d: number; a: number; cx: number; cy: number } | null = null
 
   constructor(public canvas: HTMLCanvasElement) {
     this.ctx = canvas.getContext('2d')!
@@ -211,11 +212,16 @@ export class CanvasView {
 
   private pinchState() {
     const [a, b] = [...this.touches.values()]
-    return { d: Math.hypot(b.x - a.x, b.y - a.y) || 1, cx: (a.x + b.x) / 2, cy: (a.y + b.y) / 2 }
+    const dx = b.x - a.x, dy = b.y - a.y
+    return { d: Math.hypot(dx, dy) || 1, a: Math.atan2(dy, dx), cx: (a.x + b.x) / 2, cy: (a.y + b.y) / 2 }
   }
 
-  // Two fingers: scale about the midpoint and translate by how far the midpoint
-  // moved, so the image tracks the fingers instead of the zoom fighting the pan.
+  // Two fingers do all three at once: the separation sets the scale, the angle
+  // between them sets the rotation, and the midpoint sets the position. Rather
+  // than composing three transforms, take the image point currently under the
+  // midpoint, apply the new scale and angle, then place that same image point
+  // back under the midpoint's new position -- so the drawing stays stuck to the
+  // fingers no matter which of the three the user is actually doing.
   private applyPinch() {
     const now = this.pinchState()
     const was = this.pinch
@@ -223,23 +229,46 @@ export class CanvasView {
     if (!was) return
     this.autoFit = false
     const r = this.canvas.getBoundingClientRect()
-    const cx = (now.cx - r.left) * devicePixelRatio, cy = (now.cy - r.top) * devicePixelRatio
-    const ns = Math.min(32, Math.max(0.03, this.scale * (now.d / was.d)))
-    this.ox = cx - (cx - this.ox) * (ns / this.scale) + (now.cx - was.cx) * devicePixelRatio
-    this.oy = cy - (cy - this.oy) * (ns / this.scale) + (now.cy - was.cy) * devicePixelRatio
-    this.scale = ns
+    const anchor = this.toImagePx((was.cx - r.left) * devicePixelRatio, (was.cy - r.top) * devicePixelRatio)
+    this.scale = Math.min(32, Math.max(0.03, this.scale * (now.d / was.d)))
+    // atan2 wraps at +-pi; normalise the delta so crossing that seam does not
+    // spin the image half a turn.
+    let da = now.a - was.a
+    if (da > Math.PI) da -= 2 * Math.PI
+    if (da < -Math.PI) da += 2 * Math.PI
+    this.rot += da
+    const nx = (now.cx - r.left) * devicePixelRatio, ny = (now.cy - r.top) * devicePixelRatio
+    const c = Math.cos(this.rot) * this.scale, s = Math.sin(this.rot) * this.scale
+    this.ox = nx - (anchor[0] * c - anchor[1] * s)
+    this.oy = ny - (anchor[0] * s + anchor[1] * c)
     this.render()
   }
 
   toImage(e: { clientX: number; clientY: number }): [number, number] {
     const r = this.canvas.getBoundingClientRect()
-    const cx = (e.clientX - r.left) * devicePixelRatio, cy = (e.clientY - r.top) * devicePixelRatio
-    return [(cx - this.ox) / this.scale, (cy - this.oy) / this.scale]
+    return this.toImagePx((e.clientX - r.left) * devicePixelRatio, (e.clientY - r.top) * devicePixelRatio)
+  }
+
+  // Canvas device pixels -> image space. Inverse of the render transform, which
+  // is a rotation and a uniform scale, so the inverse is the transpose over s.
+  private toImagePx(cx: number, cy: number): [number, number] {
+    const dx = cx - this.ox, dy = cy - this.oy
+    const c = Math.cos(this.rot), s = Math.sin(this.rot)
+    return [(dx * c + dy * s) / this.scale, (-dx * s + dy * c) / this.scale]
+  }
+
+  // Put an image point in the middle of the viewport, whatever the rotation.
+  centerOn(x: number, y: number) {
+    this.autoFit = false
+    const c = Math.cos(this.rot) * this.scale, s = Math.sin(this.rot) * this.scale
+    this.ox = this.canvas.width / 2 - (x * c - y * s)
+    this.oy = this.canvas.height / 2 - (x * s + y * c)
   }
 
   fit() {
     this.autoFit = true
     if (!this.imgW) return
+    this.rot = 0 // fitting is a reset: an unexpected tilt is never what fit means
     const s = Math.min(this.canvas.width / this.imgW, this.canvas.height / this.imgH) * 0.95
     this.scale = s
     this.ox = (this.canvas.width - this.imgW * s) / 2
@@ -252,7 +281,8 @@ export class CanvasView {
     ctx.setTransform(1, 0, 0, 1, 0, 0)
     ctx.clearRect(0, 0, canvas.width, canvas.height)
     if (!this.imgW) return
-    ctx.setTransform(this.scale, 0, 0, this.scale, this.ox, this.oy)
+    const rc = Math.cos(this.rot) * this.scale, rs = Math.sin(this.rot) * this.scale
+    ctx.setTransform(rc, rs, -rs, rc, this.ox, this.oy)
     ctx.imageSmoothingEnabled = this.scale < 1
     // checker
     ctx.fillStyle = '#3a3a3a'

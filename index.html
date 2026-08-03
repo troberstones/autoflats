@@ -6,22 +6,36 @@
 <style>
   :root { color-scheme: dark; }
   * { box-sizing: border-box; margin: 0; }
-  body { font: 13px system-ui, sans-serif; background: #222; color: #ddd; height: 100vh;
-         display: grid; grid-template-rows: auto 1fr auto; grid-template-columns: 44px 1fr 240px;
+  /* dvh, not vh: on iPad Safari 100vh counts the area behind the browser chrome,
+     so the bottom control bar sat below the fold and could not be reached. */
+  body { font: clamp(11px, 1.05vw, 13px) system-ui, sans-serif; background: #222; color: #ddd;
+         height: 100vh; height: 100dvh; overflow: hidden;
+         display: grid; grid-template-rows: auto 1fr auto;
+         grid-template-columns: 44px minmax(0, 1fr) clamp(150px, 19vw, 240px);
          grid-template-areas: "menu menu menu" "tools canvas layers" "ctrl ctrl ctrl"; }
-  #menu { grid-area: menu; display: flex; gap: 6px; padding: 6px 10px; background: #2c2c2c; align-items: center; border-bottom: 1px solid #111; }
+  #menu { grid-area: menu; display: flex; flex-wrap: wrap; gap: 6px; padding: 6px 10px; background: #2c2c2c; align-items: center; border-bottom: 1px solid #111; }
   #tools { grid-area: tools; display: flex; flex-direction: column; gap: 4px; padding: 6px 4px; background: #2c2c2c; border-right: 1px solid #111; }
   #wrap { grid-area: canvas; position: relative; overflow: hidden; }
   #view { position: absolute; inset: 0; width: 100%; height: 100%; touch-action: none; }
   #layers { grid-area: layers; overflow-y: auto; background: #2c2c2c; border-left: 1px solid #111; padding: 4px; }
-  #ctrl { grid-area: ctrl; display: flex; gap: 14px; padding: 6px 10px; background: #2c2c2c; border-top: 1px solid #111; align-items: center; flex-wrap: wrap; }
+  /* The bar wraps to as many rows as it needs, but never takes more than a third
+     of the window -- past that it scrolls, so the canvas is never squeezed out. */
+  #ctrl { grid-area: ctrl; display: flex; gap: clamp(6px, 1vw, 14px); padding: 6px 10px; background: #2c2c2c;
+          border-top: 1px solid #111; align-items: center; flex-wrap: wrap;
+          max-height: 34dvh; overflow-y: auto; overscroll-behavior: contain; }
   button { background: #444; color: #ddd; border: 1px solid #555; border-radius: 4px; padding: 4px 10px; cursor: pointer; }
   button:hover { background: #505050; }
   button:disabled { opacity: .4; cursor: default; }
   button.active { background: #2a6cd4; border-color: #2a6cd4; color: #fff; }
   #tools button { padding: 8px 0; font-size: 15px; }
   label.s { display: flex; gap: 6px; align-items: center; white-space: nowrap; }
-  input[type=range] { width: 90px; }
+  input[type=range] { width: clamp(52px, 6.5vw, 90px); }
+  /* Touch targets: a finger needs more than a 4px-tall slider thumb. */
+  @media (pointer: coarse) {
+    button { padding: 7px 12px; }
+    input[type=range] { height: 24px; }
+    .row { padding: 6px 4px; }
+  }
   .row { display: flex; align-items: center; gap: 6px; padding: 3px 4px; border-radius: 4px; cursor: pointer; }
   .row:hover { background: #383838; }
   .row.sel { background: #2a4a74; }
