@@ -20,9 +20,14 @@
   #layers { grid-area: layers; overflow-y: auto; background: #2c2c2c; border-left: 1px solid #111; padding: 4px; }
   /* The bar wraps to as many rows as it needs, but never takes more than a third
      of the window -- past that it scrolls, so the canvas is never squeezed out. */
-  #ctrl { grid-area: ctrl; display: flex; gap: clamp(6px, 1vw, 14px); padding: 6px 10px; background: #2c2c2c;
-          border-top: 1px solid #111; align-items: center; flex-wrap: wrap;
+  #ctrl { grid-area: ctrl; display: flex; flex-direction: column; gap: 4px; padding: 6px 10px; background: #2c2c2c;
+          border-top: 1px solid #111; align-items: stretch;
           max-height: 34dvh; overflow-y: auto; overscroll-behavior: contain; }
+  .bar { display: flex; gap: clamp(6px, 1vw, 14px); align-items: center; flex-wrap: wrap; }
+  #adv { border-top: 1px dashed #444; padding-top: 5px; }
+  #adv[hidden] { display: none; }
+  button.link { background: none; border: none; color: #8bf; padding: 4px 2px; }
+  button.link:hover { background: none; text-decoration: underline; }
   button { background: #444; color: #ddd; border: 1px solid #555; border-radius: 4px; padding: 4px 10px; cursor: pointer; }
   button:hover { background: #505050; }
   button:disabled { opacity: .4; cursor: default; }
@@ -46,6 +51,9 @@
   .row.grp:hover { background: #3d3d3d; }
   .row.kid { padding-left: 18px; }
   .tw { width: 10px; color: #999; font-size: 9px; user-select: none; }
+  .phead { display: flex; gap: 6px; align-items: center; padding: 2px 4px 6px; border-bottom: 1px solid #383838; margin-bottom: 4px; }
+  .phead select { flex: 1; min-width: 0; background: #3a3a3a; color: #ddd; border: 1px solid #555; border-radius: 4px; padding: 2px; }
+  input.ren { flex: 1; min-width: 0; background: #1c1c1c; color: #fff; border: 1px solid #2a6cd4; border-radius: 3px; padding: 1px 3px; font: inherit; }
   #status { margin-left: auto; color: #999; }
   #badge { color: #ffa030; display: none; }
   .hint { color: #888; font-size: 11px; }
@@ -90,29 +98,34 @@
   <div id="wrap"><canvas id="view"></canvas></div>
   <div id="layers"></div>
   <div id="ctrl">
-    <label class="s">Line threshold <input type="range" id="sThr" min="5" max="90" value="5"><span id="vThr">5%</span></label>
-    <label class="s">Color reject <input type="range" id="sSat" min="5" max="100" value="30"><span id="vSat">30%</span></label>
-    <label class="s">Smoothing <input type="range" id="sSm" min="0" max="4" value="1"><span id="vSm">1px</span></label>
-    <label class="s" title="Erode lines to a 1px skeleton before filling, so gap size &amp; matching ignore stroke thickness"><input type="checkbox" id="cSkel"> Skeletonize</label>
-    <label class="s">Gap size <input type="range" id="sGap" min="1" max="32" value="8"><span id="vGap">8px</span></label>
-    <label class="s" id="lMin">Min region <input type="range" id="sMin" min="0" max="500" value="0"><span id="vMin">0px²</span></label>
-    <label class="s" title="Assign fills from a palette of this many colors, so neighbouring fills never share one. Groups the layers panel and enables one-layer-per-color export. 0 = a unique color per fill.">Colors <input type="range" id="sPal" min="0" max="32" value="0"><span id="vPal">unique</span></label>
-    <label class="s" title="Segment by hanging the drawing like a rubber sheet and taking the sagging valleys as fills, instead of rolling a ball. Higher = only deeper valleys count as their own fill. 0 = off (trapped ball).">Rubber sheet <input type="range" id="sSag" min="0" max="30" value="2"><span id="vSag">2px</span></label>
-    <label class="s" id="lSliv" title="Merge fills thinner than this everywhere — the space between parallel/double strokes. 0 = off">Sliver width <input type="range" id="sSliv" min="0" max="8" value="3"><span id="vSliv">3px</span></label>
-    <label class="s" id="lDecl" title="Absorb small fills squeezed between strokes in busy line work (hatching, texture, folds) into the area they shade. Higher = more aggressive. 0 = off">Declutter <input type="range" id="sDecl" min="0" max="100" value="50"><span id="vDecl">50</span></label>
-    <label class="s" id="lMerge" title="Merge fill fragments whose shared border crosses open space against the stroke flow"><input type="checkbox" id="cMerge" checked> Auto-merge leaks</label>
-    <label class="s" title="Before segmenting, seal the breaks that are past arguing about: two open stroke ends within reach of each other, facing each other head-on, with nothing but blank paper between them. Each gets a 1px invisible bridge, so an area the artist meant to close is already closed when the rubber sheet arrives — which puts the boundary on the drawn line instead of on a crease inside the shape. Never exported. Closed gaps are drawn in green with the Edits overlay."><input type="checkbox" id="cHybrid" checked> Close tight gaps</label>
-    <label class="s" title="Rank gap bridges by a stochastic completion field (Williams &amp; Jacobs): tips link only where the field diffuses a smooth connecting contour between them. Used by Suggest Gaps."><input type="checkbox" id="cField"> Completion field</label>
-    <label class="s" title="Re-flat automatically after tuning a parameter"><input type="checkbox" id="cAuto" checked> Auto re-flat</label>
-    <label class="s" title="Automatically bridge suggested gaps after flatting. Each suggestion is already proven to close a fill, so this is safe to leave on; ⌘Z undoes a round."><input type="checkbox" id="cBridge"> Auto-bridge gaps</label>
-    <label class="s" id="lGpu" title="Run the growth stages on the GPU (WebGPU); falls back to CPU automatically" hidden><input type="checkbox" id="cGpu" checked> GPU</label>
-    <label class="s">Line opacity <input type="range" id="sOp" min="0" max="100" value="100"></label>
-    <label class="s"><input type="checkbox" id="cLines"> Show extracted lines</label>
-    <label class="s" id="lSagView" title="Show the rubber sheet itself: black where it is pinned to the ink, brightening as it sags. Needs the Rubber sheet slider to be up."><input type="checkbox" id="cSagView"> Sag field <span id="vSagView" class="hint"></span></label>
-    <label class="s" id="lZebra" title="Cut the sag field into this many flat bands, like contour lines on a map — every stripe is one step of roominess, so tight stripes mean the sheet is falling away fast and a wide stripe is a plateau. Alternate bands are dimmed so neighbours never blend. Bands are evenly spaced on the same log scale as the ramp. 0 = smooth ramp.">Zebra <input type="range" id="sZebra" min="0" max="32" value="0"><span id="vZebra">off</span></label>
-    <label class="s" title="Draw the edits that are remembered and replayed after every re-flat: draw-merge strokes (green), deleted-fill markers (red ✖) and group lassos (yellow). Pick and remove them with the ⬚ tool."><input type="checkbox" id="cEdits"> Edits</label>
-    <label class="s" title="Outline the watershed ridges between fills. White where the ridge lies on ink (the artist drew that boundary); cyan where it crosses blank paper — a gap that got closed with nothing drawn across it."><input type="checkbox" id="cRidge"> Ridges</label>
-    <button id="bUndo" disabled>Undo ⌘Z</button>
+    <div class="bar">
+      <label class="s">Line threshold <input type="range" id="sThr" min="5" max="90" value="5"><span id="vThr">5%</span></label>
+      <label class="s">Smoothing <input type="range" id="sSm" min="0" max="4" value="1"><span id="vSm">1px</span></label>
+      <label class="s" id="lMin">Min region <input type="range" id="sMin" min="0" max="500" value="0"><span id="vMin">0px²</span></label>
+      <label class="s" title="Assign fills from a palette of this many colors, so neighbouring fills never share one. Groups the layers panel and enables one-layer-per-color export. 0 = a unique color per fill.">Colors <input type="range" id="sPal" min="0" max="32" value="0"><span id="vPal">unique</span></label>
+      <label class="s" title="Segment by hanging the drawing like a rubber sheet and taking the sagging valleys as fills, instead of rolling a ball. Higher = only deeper valleys count as their own fill. 0 = off (trapped ball).">Rubber sheet <input type="range" id="sSag" min="0" max="30" value="2"><span id="vSag">2px</span></label>
+      <label class="s" title="Before segmenting, seal the breaks that are past arguing about: two open stroke ends within reach of each other, facing each other head-on, with nothing but blank paper between them. Each gets a 1px invisible bridge, so an area the artist meant to close is already closed when the rubber sheet arrives — which puts the boundary on the drawn line instead of on a crease inside the shape. Never exported. Closed gaps are drawn in green with the Edits overlay."><input type="checkbox" id="cHybrid" checked> Close tight gaps</label>
+      <label class="s" title="Re-flat automatically after tuning a parameter"><input type="checkbox" id="cAuto" checked> Auto re-flat</label>
+      <label class="s">Line opacity <input type="range" id="sOp" min="0" max="100" value="100"></label>
+      <label class="s" title="Draw the edits that are remembered and replayed after every re-flat: draw-merge strokes (green), deleted-fill markers (red ✖) and group lassos (yellow). Pick and remove them with the ⬚ tool."><input type="checkbox" id="cEdits"> Edits</label>
+      <label class="s" title="Outline the watershed ridges between fills. White where the ridge lies on ink (the artist drew that boundary); cyan where it crosses blank paper — a gap that got closed with nothing drawn across it."><input type="checkbox" id="cRidge"> Ridges</label>
+      <button id="bUndo" disabled>Undo ⌘Z</button>
+      <button id="bAdv" class="link" aria-expanded="false" title="Show the tuning controls that most drawings never need">Advanced ▸</button>
+    </div>
+    <div class="bar" id="adv" hidden>
+      <label class="s">Color reject <input type="range" id="sSat" min="5" max="100" value="30"><span id="vSat">30%</span></label>
+      <label class="s" title="Erode lines to a 1px skeleton before filling, so gap size &amp; matching ignore stroke thickness"><input type="checkbox" id="cSkel"> Skeletonize</label>
+      <label class="s">Gap size <input type="range" id="sGap" min="1" max="32" value="8"><span id="vGap">8px</span></label>
+      <label class="s" id="lSliv" title="Merge fills thinner than this everywhere — the space between parallel/double strokes. 0 = off">Sliver width <input type="range" id="sSliv" min="0" max="8" value="3"><span id="vSliv">3px</span></label>
+      <label class="s" id="lDecl" title="Absorb small fills squeezed between strokes in busy line work (hatching, texture, folds) into the area they shade. Higher = more aggressive. 0 = off">Declutter <input type="range" id="sDecl" min="0" max="100" value="50"><span id="vDecl">50</span></label>
+      <label class="s" id="lMerge" title="Merge fill fragments whose shared border crosses open space against the stroke flow"><input type="checkbox" id="cMerge" checked> Auto-merge leaks</label>
+      <label class="s" title="Rank gap bridges by a stochastic completion field (Williams &amp; Jacobs): tips link only where the field diffuses a smooth connecting contour between them. Used by Suggest Gaps."><input type="checkbox" id="cField"> Completion field</label>
+      <label class="s" title="Automatically bridge suggested gaps after flatting. Each suggestion is already proven to close a fill, so this is safe to leave on; ⌘Z undoes a round."><input type="checkbox" id="cBridge"> Auto-bridge gaps</label>
+      <label class="s" id="lGpu" title="Run the growth stages on the GPU (WebGPU); falls back to CPU automatically" hidden><input type="checkbox" id="cGpu" checked> GPU</label>
+      <label class="s"><input type="checkbox" id="cLines"> Show extracted lines</label>
+      <label class="s" id="lSagView" title="Show the rubber sheet itself: black where it is pinned to the ink, brightening as it sags. Needs the Rubber sheet slider to be up."><input type="checkbox" id="cSagView"> Sag field <span id="vSagView" class="hint"></span></label>
+      <label class="s" id="lZebra" title="Cut the sag field into this many flat bands, like contour lines on a map — every stripe is one step of roominess, so tight stripes mean the sheet is falling away fast and a wide stripe is a plateau. Alternate bands are dimmed so neighbours never blend. Bands are evenly spaced on the same log scale as the ramp. 0 = smooth ramp.">Zebra <input type="range" id="sZebra" min="0" max="32" value="0"><span id="vZebra">off</span></label>
+    </div>
   </div>
   <!-- visually hidden rather than display:none: Safari will not open the file
        picker for a hidden input when .click() is called from script -->

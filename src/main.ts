@@ -371,7 +371,9 @@ function regionRow(r: Region, kid: boolean): HTMLDivElement {
   const grp = r.group ? doc.groups.find(g => g.id === r.group) : null
   nm.textContent = r.name + (r.isBg ? ' (bg)' : '') + (grp ? ' · ' + grp.name : '')
   if (grp) nm.title = 'In group "' + grp.name + '" — exports as a PSD folder'
-  nm.ondblclick = () => { const v = prompt('Layer name', r.name); if (v) { r.name = v; rebuildPanel() } }
+  else nm.title = 'Double-click to rename (Enter moves to the next fill)'
+  nm.ondblclick = () => startRename(row)
+  row.dataset.rid = '' + r.id
   const ar = document.createElement('span')
   ar.className = 'ar'
   ar.textContent = fmtArea(r.area)
@@ -380,13 +382,121 @@ function regionRow(r: Region, kid: boolean): HTMLDivElement {
   return row
 }
 
+// Rename in place, and keep going: Enter commits and opens the next fill's
+// editor, so a whole drawing can be named without touching the mouse again.
+// Renaming a hundred fills through prompt() -- a modal per fill -- was the
+// reason nobody named anything.
+function startRename(row: HTMLElement) {
+  const r = doc.regions[+(row.dataset.rid ?? 0)]
+  if (!r) return
+  const nm = row.querySelector('.nm') as HTMLElement
+  if (!nm || row.querySelector('input.ren')) return
+  const inp = document.createElement('input')
+  inp.className = 'ren'
+  inp.value = r.name
+  nm.replaceWith(inp)
+  inp.focus(); inp.select()
+  let done = false
+  const finish = (commit: boolean, next: boolean) => {
+    if (done) return
+    done = true
+    if (commit && inp.value.trim()) r.name = inp.value.trim()
+    const sib = row.nextElementSibling as HTMLElement | null
+    rebuildPanel()
+    if (!next || !sib?.dataset.rid) return
+    const again = $('layers').querySelector(`.row[data-rid="${sib.dataset.rid}"]`)
+    if (again) startRename(again as HTMLElement)
+  }
+  inp.onkeydown = e => {
+    if (e.key === 'Enter') { e.preventDefault(); finish(true, true) }
+    else if (e.key === 'Escape') { e.preventDefault(); finish(false, false) }
+    e.stopPropagation()   // the canvas shortcuts must not see letters typed here
+  }
+  inp.onblur = () => finish(true, false)
+}
+
+// Panel order. Area-descending is the old behaviour and is still the right
+// default for finding the big shapes; the sweep is for naming, where you want
+// the list to follow the drawing the way your eye does. A diagonal sweep
+// (minX + minY) rather than strict reading order, because reading order sorts
+// on a single row of pixels: two fills whose tops differ by one pixel land far
+// apart in the list even though they sit side by side.
+type SortMode = 'area' | 'sweep'
+let sortMode: SortMode = 'sweep'
+let sweepCache: { key: string; at: Map<number, number> } | null = null
+
+// Top-left corner of each root's bounding box, in one pass over the labels.
+function sweepKeys(): Map<number, number> {
+  const key = `${doc.labels ? doc.W * doc.H : 0}|${doc.rootLut().join(',')}`
+  if (sweepCache && sweepCache.key === key) return sweepCache.at
+  const at = new Map<number, number>()
+  if (doc.labels) {
+    const lut = doc.rootLut(), { W, H, labels } = doc
+    const minX = new Map<number, number>(), minY = new Map<number, number>()
+    for (let y = 0; y < H; y++) {
+      for (let x = 0; x < W; x++) {
+        const r = lut[labels[y * W + x]]
+        if (!r) continue
+        if (!minY.has(r)) minY.set(r, y)          // first row wins: rows ascend
+        const mx = minX.get(r)
+        if (mx === undefined || x < mx) minX.set(r, x)
+      }
+    }
+    for (const [r, y] of minY) at.set(r, y + (minX.get(r) ?? 0))
+  }
+  sweepCache = { key, at }
+  return at
+}
+
+function sortedRoots(): Region[] {
+  const roots = doc.roots().filter(r => !r.deleted)
+  if (sortMode === 'area') return roots
+  const at = sweepKeys()
+  // Background last whatever the order: it starts at 0,0 and would otherwise
+  // always head the list, which is never what you want to name first.
+  return roots.sort((a, b) =>
+    (a.isBg ? 1 : 0) - (b.isBg ? 1 : 0) ||
+    (at.get(a.id) ?? 0) - (at.get(b.id) ?? 0))
+}
+
+// Sort control plus a bulk renumber. Renumbering exists because the useful
+// names are positional ("Fill 1" being the top-left one), and that is only true
+// if the numbers follow the current order rather than the order the segmenter
+// happened to emit.
+function panelHeader(): HTMLElement {
+  const h = document.createElement('div')
+  h.className = 'phead'
+  const sel = document.createElement('select')
+  sel.title = 'Order of the fill list'
+  for (const [v, label] of [['sweep', 'sort: top-left sweep'], ['area', 'sort: largest first']] as const) {
+    const o = document.createElement('option')
+    o.value = v; o.textContent = label; o.selected = sortMode === v
+    sel.append(o)
+  }
+  sel.onchange = () => { sortMode = sel.value as SortMode; rebuildPanel() }
+  const num = document.createElement('button')
+  num.className = 'link'
+  num.textContent = 'Renumber'
+  num.title = 'Rename every fill to Fill 1..N in the current list order'
+  num.onclick = () => {
+    const rs = sortedRoots()
+    const prev = rs.map(r => r.name)
+    rs.forEach((r, i) => { r.name = r.isBg ? 'Background' : `Fill ${i + 1}` })
+    pushUndo({ label: 'renumber', undo: () => { rs.forEach((r, i) => { r.name = prev[i] }); rebuildPanel() } })
+    rebuildPanel()
+  }
+  h.append(sel, num)
+  return h
+}
+
 // One row per fill, or -- once fills share colours (Colors slider) -- one
 // collapsible row per colour with bulk show/hide and recolour, so the panel
 // stays short no matter how many regions there are.
 function rebuildPanel() {
   const panel = $('layers')
   panel.innerHTML = ''
-  const roots = doc.roots().filter(r => !r.deleted)
+  panel.append(panelHeader())
+  const roots = sortedRoots()
   const groups = new Map<string, Region[]>()
   for (const r of roots) {
     const k = rgbToHex(r.color)
@@ -1300,7 +1410,7 @@ async function doExport() {
   status('Exporting…', true)
   await new Promise(r => setTimeout(r))
   const regions: ExportRegion[] = doc.roots().filter(r => !r.deleted).map(r => ({
-    id: r.id, color: r.color, name: r.name, hidden: !r.visible,
+    id: r.id, color: r.color, name: r.name, hidden: !r.visible, isBg: r.isBg,
     group: r.group ? doc.groups.find(g => g.id === r.group)?.name : undefined,
   }))
   const mode = ($('expMode') as HTMLSelectElement).value as ExportMode
@@ -1338,6 +1448,18 @@ $('bAcceptAll').onclick = () => {
   runFlat(true)
 }
 $('bExport').onclick = doExport
+// Advanced: the tuning controls most drawings never need. Remembered across
+// sessions, because someone who opens it once usually wants it open.
+const ADV_KEY = 'autoflats.adv'
+function setAdvanced(open: boolean) {
+  $('adv').hidden = !open
+  $('bAdv').textContent = open ? 'Advanced ▾' : 'Advanced ▸'
+  $('bAdv').setAttribute('aria-expanded', '' + open)
+  try { localStorage.setItem(ADV_KEY, open ? '1' : '') } catch { /* private mode */ }
+}
+$('bAdv').onclick = () => setAdvanced(!!$('adv').hidden)
+try { if (localStorage.getItem(ADV_KEY)) setAdvanced(true) } catch { /* private mode */ }
+
 $('bUndo').onclick = doUndo
 $('tPan').onclick = () => setTool('pan')
 $('tFill').onclick = () => setTool('fill')

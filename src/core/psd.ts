@@ -2,6 +2,7 @@ import { writePsd, type Psd, type Layer } from 'ag-psd'
 
 export interface ExportRegion {
   id: number; color: [number, number, number]; name: string; hidden: boolean
+  isBg?: boolean // left out of the merged-flats layer
   group?: string // user-drawn group -> its own PSD folder
 }
 
@@ -134,6 +135,24 @@ export function exportPsd(W: number, H: number, labels: Int32Array, rootOf: Int3
     const kids = layersFor(regions.filter(r => gi.get(r.id) === k + 1), name)
     if (kids.length) children.push({ name, opened: false, children: kids })
   })
+
+  // Every fill on one layer, with the background left out, sitting directly
+  // under the line art. This is the layer you actually paint on top of: the
+  // per-fill layers below are for correcting the flatting, and once that is
+  // done you want the flats as a single piece of artwork with the paper still
+  // transparent behind the figure. Transparent (not white) outside the fills,
+  // so it composites over whatever background the colourist chooses.
+  const merged = raw(W, H)
+  let any = false
+  for (let i = 0; i < N; i++) {
+    const r = byRoot.get(rootOf[labels[i]])
+    if (!r || r.hidden || r.isBg) continue
+    const o = i * 4
+    merged.data[o] = r.color[0]; merged.data[o + 1] = r.color[1]; merged.data[o + 2] = r.color[2]
+    merged.data[o + 3] = 255
+    any = true
+  }
+  if (any) children.push({ name: 'Flats (merged)', imageData: merged as ImageData, left: 0, top: 0 })
 
   children.push({ name: 'Line Art', imageData: lineImg as ImageData, left: 0, top: 0 })
 

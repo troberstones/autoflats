@@ -1,5 +1,12 @@
 // Invariant tests for the flatting pipeline.  npm test
-import { readPsd } from 'ag-psd'
+import { readPsd, initializeCanvas } from 'ag-psd'
+
+// ag-psd decodes layer pixels through a canvas, which node has no notion of. It
+// only ever needs somewhere to put the bytes, so hand it a plain object; the
+// canvas factory stays a thrower, since nothing here should reach it.
+initializeCanvas(
+  () => { throw new Error('no canvas in node') },
+  (width, height) => ({ width, height, data: new Uint8ClampedArray(width * height * 4) }) as unknown as ImageData)
 import { test, run, ok, eq, near, between, skip,
          threeBoxes, leakyBox, hatchedBox, divergingMask, hasFfmpeg, loadSample, SAMPLES, type Art } from './harness.ts'
 import { extractInk, thresholdInk } from '../src/core/ink.ts'
@@ -180,6 +187,22 @@ test('psd: a user group becomes a folder', () => {
   const folder = (psd.children ?? []).find(c => c.name === 'Torso')
   ok(folder, 'expected a folder named after the group')
   eq(folder!.children?.length, 1, 'the group folder should hold its one fill')
+})
+
+test('psd: the merged-flats layer holds every fill but the background', () => {
+  const { W, H, labels, rootOf, ink } = tinyDoc()
+  const withBg: ExportRegion[] = [{ ...REGIONS[0], isBg: true }, REGIONS[1]]
+  const psd = readPsd(exportPsd(W, H, labels, rootOf, withBg, ink, 'region'),
+    { skipCompositeImageData: true, skipThumbnail: true, useImageData: true })
+  const names = (psd.children ?? []).map(c => c.name)
+  eq(names[names.length - 1], 'Line Art', 'line art must stay the top layer')
+  eq(names[names.length - 2], 'Flats (merged)', 'the merged layer sits directly under the line art')
+  const merged = (psd.children ?? []).find(c => c.name === 'Flats (merged)')!
+  const d = (merged.imageData ?? merged.canvas?.getContext('2d')?.getImageData(0, 0, W, H))!.data
+  // left half is the background region: must be transparent. right half opaque.
+  const at = (x: number, y: number) => d[(y * W + x) * 4 + 3]
+  eq(at(5, 10), 0, 'background must be left out of the merged layer')
+  eq(at(30, 10), 255, 'a non-background fill must be present in the merged layer')
 })
 
 test('psd: hidden fills survive per-fill export and vanish from merged export', () => {
