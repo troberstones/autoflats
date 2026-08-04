@@ -32,7 +32,18 @@
   button:hover { background: #505050; }
   button:disabled { opacity: .4; cursor: default; }
   button.active { background: #2a6cd4; border-color: #2a6cd4; color: #fff; }
-  #tools button { padding: 8px 0; font-size: 15px; }
+  /* The 1994 toolbox: a grey face with a light bevel top-left and a dark one
+     bottom-right, going the other way when pressed. Square corners on purpose
+     -- a rounded button is the wrong decade, and the icons are drawn on a
+     16x16 grid that only lines up on a flat face. */
+  #tools button { padding: 3px; font-size: 0; line-height: 0; border-radius: 0;
+                  background: #c0c0c0; border: 1px solid #000;
+                  box-shadow: inset 1px 1px 0 #fff, inset -1px -1px 0 #808080;
+                  display: flex; align-items: center; justify-content: center; }
+  #tools button:hover { background: #d0d0d0; }
+  #tools button.active { background: #a0a0a0;
+                         box-shadow: inset 1px 1px 0 #707070, inset -1px -1px 0 #e0e0e0; }
+  #tools button svg { display: block; width: 100%; height: auto; max-width: 22px; }
   label.s { display: flex; gap: 6px; align-items: center; white-space: nowrap; }
   input[type=range] { width: clamp(52px, 6.5vw, 90px); }
   /* Touch targets: a finger needs more than a 4px-tall slider thumb. */
@@ -129,17 +140,17 @@
     <span id="status">Open a line-art image to begin</span>
   </div>
   <div id="tools">
-    <button id="tPan"     title="Pan (V / hold Space)">✋</button>
-    <button id="tFill"    title="Fill / recolor region (B). Click background to carve a new fill. Alt-click: pick color">🪣</button>
-    <button id="tBarrier" title="Barrier pen (G): draw invisible gap-closing lines">🖊</button>
-    <button id="tEraser"  title="Barrier eraser (E)">🧽</button>
-    <button id="tMerge"   title="Merge regions (M): click one region, then click the region to merge into it — a rubber band follows the cursor in between. Esc, right-click or a click off the canvas cancels. Remembered as the two points you clicked, so it survives re-flatting; shown in green with the Edits overlay and removable with ⬚.">⧉</button>
-    <button id="tDraw"    title="Draw merge (D): stroke from a fill — every fill the stroke crosses merges into it">🧲</button>
-    <button id="tDel"     title="Delete fill (X): click a fill to remove it — it stops rendering and is left out of the PSD. Survives re-flatting; ⌘Z restores">🗑</button>
-    <button id="tGroup"   title="Group fills (R): lasso around or a stroke through a set of fills — they export as a PSD folder and the group survives re-flatting">🔗</button>
-    <button id="tShape"  title="Shape fill (F): draw a closed shape and it becomes a fill in the current color, on top of whatever was there. Remembered as the shape you drew, so it survives re-flatting.">⬠</button>
-    <button id="tRecolor" title="Recolor (C): click a fill to paint it the current palette color. Never carves a new fill out of the background the way the bucket does, so it is safe to sweep across a finished flat. Shift-click recolors every fill that shares that color; ⌥-click picks the color up instead.">🎨</button>
-    <button id="tPick"    title="Select edits (S): click a remembered edit — a draw-merge stroke, a ✖ delete marker or a group lasso — or drag a box around several. Shift-click adds. Delete removes them. Turns on the Edits overlay.">⬚</button>
+    <button id="tPan"     title="Pan (V / hold Space)"></button>
+    <button id="tFill"    title="Fill / recolor region (B). Click background to carve a new fill. Alt-click: pick color"></button>
+    <button id="tBarrier" title="Barrier pen (G): draw invisible gap-closing lines"></button>
+    <button id="tEraser"  title="Barrier eraser (E)"></button>
+    <button id="tMerge"   title="Merge regions (M): click one region, then click the region to merge into it — a rubber band follows the cursor in between. Esc, right-click or a click off the canvas cancels. Remembered as the two points you clicked, so it survives re-flatting; shown in green with the Edits overlay and removable with ⬚."></button>
+    <button id="tDraw"    title="Draw merge (D): stroke from a fill — every fill the stroke crosses merges into it"></button>
+    <button id="tDel"     title="Delete fill (X): click a fill to remove it — it stops rendering and is left out of the PSD. Survives re-flatting; ⌘Z restores"></button>
+    <button id="tGroup"   title="Group fills (R): lasso around or a stroke through a set of fills — they export as a PSD folder and the group survives re-flatting"></button>
+    <button id="tShape"  title="Shape fill (F): draw a closed shape and it becomes a fill in the current color, on top of whatever was there. Remembered as the shape you drew, so it survives re-flatting."></button>
+    <button id="tRecolor" title="Recolor (C): click a fill to paint it the current palette color. Never carves a new fill out of the background the way the bucket does, so it is safe to sweep across a finished flat. Shift-click recolors every fill that shares that color; ⌥-click picks the color up instead."></button>
+    <button id="tPick"    title="Select edits (S): click a remembered edit — a draw-merge stroke, a ✖ delete marker or a group lasso — or drag a box around several. Shift-click adds. Delete removes them. Turns on the Edits overlay."></button>
   </div>
   <div id="wrap"><canvas id="view"></canvas></div>
   <div id="layers"></div>

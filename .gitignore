@@ -1,3 +1,6 @@
 node_modules/
 dist/
 .DS_Store
+
+# reference papers, kept locally rather than in the repo
+*.pdf

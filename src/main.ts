@@ -1,5 +1,6 @@
 import { Doc, Region, Stroke, UndoOp, type MergePair, type ShapeFill, type Recolor, paletteColor, anchorColor, rgbToHex, hexToRgb, hslToRgb, rgbToHsl } from './state.ts'
 import { CanvasView, Tool } from './ui/canvasView.ts'
+import { iconSvg } from './ui/icons.ts'
 import { extractInk, thresholdInk } from './core/ink.ts'
 import { smoothMask, skeletonize } from './core/morphology.ts'
 import { exportPsd, layerCount, ExportRegion, type ExportMode } from './core/psd.ts'
@@ -1149,11 +1150,21 @@ function refreshView() {
 }
 
 // ---------- tools ----------
+const TOOL_BUTTONS = [
+  ['tPan', 'pan'], ['tFill', 'fill'], ['tRecolor', 'recolor'], ['tBarrier', 'barrier'],
+  ['tEraser', 'eraser'], ['tMerge', 'merge'], ['tDraw', 'dmerge'], ['tDel', 'delfill'],
+  ['tGroup', 'group'], ['tShape', 'shape'], ['tPick', 'pick'],
+] as const
+
+// The buttons ship empty in the markup and get their picture here, so the
+// bitmap and the tool name it belongs to are named in exactly one place.
+for (const [id, tt] of TOOL_BUTTONS) $(id).innerHTML = iconSvg(tt)
+
 function setTool(t: Tool) {
   view.tool = t
   mergeFirst = null
   view.mergeAnchor = null
-  for (const [id, tt] of [['tPan', 'pan'], ['tFill', 'fill'], ['tRecolor', 'recolor'], ['tBarrier', 'barrier'], ['tEraser', 'eraser'], ['tMerge', 'merge'], ['tDraw', 'dmerge'], ['tDel', 'delfill'], ['tGroup', 'group'], ['tShape', 'shape'], ['tPick', 'pick']] as const)
+  for (const [id, tt] of TOOL_BUTTONS)
     $(id).classList.toggle('active', tt === t)
   // picking edits you cannot see would be a guessing game
   if (t === 'pick' && !($<HTMLInputElement>('cEdits')).checked) ($<HTMLInputElement>('cEdits')).checked = true

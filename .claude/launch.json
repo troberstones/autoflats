@@ -3,8 +3,7 @@
   "configurations": [
     {
       "name": "autoflats",
-      "runtimeExecutable": "./node_modules/.bin/vite",
-      "runtimeArgs": ["--port", "5173", "--strictPort"],
+      "url": "http://localhost:5173",
       "port": 5173
     }
   ]
