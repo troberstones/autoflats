@@ -16,7 +16,8 @@ import { expandLabels } from '../src/core/expand.ts'
 import { finalizeRegions, type RegionInfo } from '../src/core/regions.ts'
 import { membraneSag } from '../src/core/membrane.ts'
 import { sagSegment } from '../src/core/sag.ts'
-import { exportPsd, layerCount, WATERCOLOR, type ExportRegion, type ExportMode, type Watercolor } from '../src/core/psd.ts'
+import { exportPsd, layerCount, type ExportRegion, type ExportMode } from '../src/core/psd.ts'
+import { WATERCOLOR, washField, edgeDistance, type Watercolor } from '../src/core/wash.ts'
 
 // ---------- the shared invariant check ----------
 // Every one of these held false at some point while the GPU growth path was
@@ -251,6 +252,29 @@ test('psd: watercolor pools pigment at the edges and repeats exactly', () => {
   // deterministic: exporting the same drawing twice must give the same painting
   const again = read(WATERCOLOR)
   eq([...wet.data].join(), [...again.data].join(), 'watercolor must be reproducible')
+})
+
+test('wash: the field is independent of colour, so recolouring cannot change it', () => {
+  // The whole preview design rests on this: the wash is a multiply against a
+  // cached field, and the cache is keyed on shape, not on the palette. If the
+  // field ever depended on the colours, every recolour would silently show a
+  // stale wash.
+  const { W, H, labels, rootOf } = tinyDoc()
+  const a = washField(W, H, edgeDistance(W, H, labels, rootOf), WATERCOLOR)
+  const b = washField(W, H, edgeDistance(W, H, labels, rootOf), WATERCOLOR)
+  eq([...a.k].join(), [...b.k].join(), 'same shape and settings must give the same field')
+  // and it really does vary: a constant field would pass the line above too
+  ok(new Set(a.k).size > 100, 'the wash must actually vary across the image')
+})
+
+test('wash: settings move the field, and zeroed settings leave flat colour', () => {
+  const { W, H, labels, rootOf } = tinyDoc()
+  const dist = edgeDistance(W, H, labels, rootOf)
+  const off = washField(W, H, dist, { pool: 0, grain: 0, bloom: 0 })
+  ok([...off.k].every(k => k === 1), 'with every term at zero the wash must be a no-op multiply')
+  const deep = washField(W, H, dist, { ...WATERCOLOR, pool: 0.5 })
+  const shallow = washField(W, H, dist, { ...WATERCOLOR, pool: 0.1 })
+  ok(deep.k[0] < shallow.k[0], 'more pooling must darken the rim further')
 })
 
 // ---------- the real sample art (optional) ----------

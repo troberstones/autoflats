@@ -1,4 +1,4 @@
-export type Tool = 'pan' | 'fill' | 'barrier' | 'eraser' | 'merge' | 'dmerge' | 'delfill' | 'group' | 'shape' | 'pick'
+export type Tool = 'pan' | 'fill' | 'recolor' | 'barrier' | 'eraser' | 'merge' | 'dmerge' | 'delfill' | 'group' | 'shape' | 'pick'
 // Press-to-release travel, in client px, below which a drag still counts as a
 // click rather than a stroke or a box-select.
 const MOVE_SLOP = 6

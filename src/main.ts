@@ -2,7 +2,8 @@ import { Doc, Region, Stroke, UndoOp, type MergePair, type ShapeFill, paletteCol
 import { CanvasView, Tool } from './ui/canvasView.ts'
 import { extractInk, thresholdInk } from './core/ink.ts'
 import { smoothMask, skeletonize } from './core/morphology.ts'
-import { exportPsd, layerCount, WATERCOLOR, ExportRegion, type ExportMode } from './core/psd.ts'
+import { exportPsd, layerCount, ExportRegion, type ExportMode } from './core/psd.ts'
+import { WATERCOLOR, edgeDistance, washField, type Watercolor, type WashField } from './core/wash.ts'
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T
 
@@ -261,6 +262,18 @@ function rebuildLineCanvas() {
   view.render()
 }
 
+// The wash field, cached. It depends on the shape of the fills and on the
+// watercolor settings, never on the colours, so it survives every recolour and
+// is rebuilt only by a re-flat, a merge or a drag of one of the sliders.
+let washCache: { labels: Int32Array; key: string; field: WashField } | null = null
+function washFor(lut: Int32Array): WashField {
+  const key = lut.join(',') + '|' + JSON.stringify(wcParams)
+  if (washCache && washCache.labels === doc.labels && washCache.key === key) return washCache.field
+  const field = washField(doc.W, doc.H, edgeDistance(doc.W, doc.H, doc.labels!, lut), wcParams)
+  washCache = { labels: doc.labels!, key, field }
+  return field
+}
+
 function rebuildFills() {
   if (!doc.labels) { view.fills = null; view.render(); return }
   const lut = doc.rootLut()
@@ -272,9 +285,25 @@ function rebuildFills() {
     cr[i] = root.color[0]; cg[i] = root.color[1]; cb[i] = root.color[2]; ca[i] = 255
   }
   const d = fillsImg.data, lb = doc.labels
-  for (let i = 0; i < lb.length; i++) {
-    const id = lb[i], o = i * 4
-    d[o] = cr[id]; d[o + 1] = cg[id]; d[o + 2] = cb[id]; d[o + 3] = ca[id]
+  const wash = wcPreviewOn() ? washFor(lut) : null
+  if (wash) {
+    // The wash is a per-pixel multiply against a field that depends only on the
+    // SHAPE of the fills, so this stays a single cheap pass and recolouring
+    // does not re-synthesize anything. Composited onto the paper here rather
+    // than left translucent: the canvas behind this is dark grey, and a wash
+    // over dark grey is not the wash that gets exported over white.
+    for (let i = 0; i < lb.length; i++) {
+      const id = lb[i], o = i * 4, k = wash.k[i], p = wash.paper[i], a = wash.a[i] / 255
+      d[o] = cr[id] * k * a + p * (1 - a)
+      d[o + 1] = cg[id] * k * a + p * (1 - a)
+      d[o + 2] = cb[id] * k * a + p * (1 - a)
+      d[o + 3] = ca[id]
+    }
+  } else {
+    for (let i = 0; i < lb.length; i++) {
+      const id = lb[i], o = i * 4
+      d[o] = cr[id]; d[o + 1] = cg[id]; d[o + 2] = cb[id]; d[o + 3] = ca[id]
+    }
   }
   fillsCtx.putImageData(fillsImg, 0, 0)
   view.fills = fillsCv
@@ -1035,7 +1064,7 @@ function setTool(t: Tool) {
   view.tool = t
   mergeFirst = null
   view.mergeAnchor = null
-  for (const [id, tt] of [['tPan', 'pan'], ['tFill', 'fill'], ['tBarrier', 'barrier'], ['tEraser', 'eraser'], ['tMerge', 'merge'], ['tDraw', 'dmerge'], ['tDel', 'delfill'], ['tGroup', 'group'], ['tShape', 'shape'], ['tPick', 'pick']] as const)
+  for (const [id, tt] of [['tPan', 'pan'], ['tFill', 'fill'], ['tRecolor', 'recolor'], ['tBarrier', 'barrier'], ['tEraser', 'eraser'], ['tMerge', 'merge'], ['tDraw', 'dmerge'], ['tDel', 'delfill'], ['tGroup', 'group'], ['tShape', 'shape'], ['tPick', 'pick']] as const)
     $(id).classList.toggle('active', tt === t)
   // picking edits you cannot see would be a guessing game
   if (t === 'pick' && !($<HTMLInputElement>('cEdits')).checked) ($<HTMLInputElement>('cEdits')).checked = true
@@ -1056,6 +1085,28 @@ view.onClick = (fx, fy, e) => {
   if (!id) return
   const r = doc.regions[id]
   if (view.tool === 'delfill') { deleteFill(id, fx, fy); return }
+  // Recolour, and only recolour. The bucket carves a new fill out of the
+  // background when you click it, which is right while you are still fixing the
+  // flatting and wrong once you are painting: at that point a stray click on
+  // the paper should change a colour, not the segmentation.
+  if (view.tool === 'recolor') {
+    if (e.altKey) { setCurHex(rgbToHex(r.color)); rebuildPalette(); rebuildPalGrid(); return }
+    const c = hexToRgb(curHex())
+    // Shift takes every fill wearing the same colour -- the whole point of
+    // flatting from a palette is that a tone is shared, so changing one's mind
+    // about it should not mean hunting down forty regions.
+    const same = e.shiftKey ? rgbToHex(r.color).toLowerCase() : null
+    const hit = doc.roots().filter(t => !t.deleted && (same ? rgbToHex(t.color).toLowerCase() === same : t.id === id))
+    if (!hit.length) return
+    const prev = hit.map(t => t.color)
+    for (const t of hit) { t.color = c; t.visible = true }
+    pushUndo({ label: same ? `recolor ${hit.length} fills` : 'recolor',
+               undo: () => { hit.forEach((t, i) => { t.color = prev[i] }); rebuildFills(); rebuildPanel() } })
+    selected = id
+    rebuildFills(); rebuildPanel()
+    if (same) status(`Recolored ${hit.length} fills`)
+    return
+  }
   if (view.tool === 'fill') {
     if (e.altKey) { ($('curColor') as HTMLInputElement).value = rgbToHex(r.color); return }
     if (r.isBg) { carveAt(y * doc.W + x); return }
@@ -1503,7 +1554,7 @@ async function doExport() {
   // all. Warn and let it through rather than clamp: a hundred washes may be
   // exactly what a big drawing needs, and the only person who knows is the one
   // about to wait for it. Saying no here would just move the work off the tool.
-  const wc = ($<HTMLInputElement>('cWater')).checked
+  const wc = wcOn()
   if (wc) {
     const n = layerCount(regions, mode)
     const max = Math.max(1, +$<HTMLInputElement>('nWcMax').value || 30)
@@ -1517,7 +1568,7 @@ async function doExport() {
   status('Exporting…', true)
   await new Promise(r => setTimeout(r))
   const blob = new Blob([exportPsd(doc.W, doc.H, doc.labels, doc.rootLut(), regions, doc.ink!, mode,
-                                   wc ? WATERCOLOR : null)], { type: 'image/vnd.adobe.photoshop' })
+                                   wc ? wcParams : null)], { type: 'image/vnd.adobe.photoshop' })
   const name = doc.name + '.psd'
   const w = window as any
   if (w.showSaveFilePicker) {
@@ -1556,37 +1607,100 @@ $('bExport').onclick = doExport
 // the same skin tone lands on every skin fill. Swatches persist across sessions,
 // because a palette outlives the drawing it was built for.
 const PAL_KEY = 'autoflats.palette'
+const PAL_SLOTS = 40 // 5 rows of 8
+const isHex = (h: unknown): h is string => typeof h === 'string' && /^#[0-9a-f]{6}$/i.test(h)
+const curHex = () => ($('curColor') as HTMLInputElement).value.toLowerCase()
+const setCurHex = (hex: string) => { ($('curColor') as HTMLInputElement).value = hex; view.shapePreview = shapeTint() }
+
+// Pad or trim to the grid. Older versions stored a dense array of colours with
+// no holes, and that reads correctly here as "the first N slots are filled".
+const normalizePalette = (list: unknown[]): (string | null)[] =>
+  Array.from({ length: PAL_SLOTS }, (_, i) => (isHex(list[i]) ? (list[i] as string).toLowerCase() : null))
+
 function loadPalette() {
   try {
     const raw = localStorage.getItem(PAL_KEY)
-    if (raw) doc.palette = JSON.parse(raw).filter((h: unknown) => typeof h === 'string' && /^#[0-9a-f]{6}$/i.test(h))
-  } catch { /* absent or corrupt: an empty palette is a fine fallback */ }
+    doc.palette = normalizePalette(raw ? JSON.parse(raw) : [])
+  } catch { doc.palette = normalizePalette([]) /* absent or corrupt */ }
 }
 function savePalette() {
   try { localStorage.setItem(PAL_KEY, JSON.stringify(doc.palette)) } catch { /* private mode */ }
 }
+function repaintPalette() { savePalette(); rebuildPalette(); rebuildPalGrid() }
+
+// The menu strip: quick access, filled slots only. The grid in the panel is
+// where a palette is built; this is where it gets used.
 function rebuildPalette() {
   const bar = $('pal')
   bar.innerHTML = ''
-  const cur = ($('curColor') as HTMLInputElement).value.toLowerCase()
+  const cur = curHex()
   for (const hex of doc.palette) {
+    if (!hex) continue
     const sw = document.createElement('i')
     sw.style.background = hex
     sw.title = hex
-    if (hex.toLowerCase() === cur) sw.className = 'cur'
+    if (hex === cur) sw.className = 'cur'
     sw.onclick = e => {
       if (e.altKey) { removeSwatch(hex); return }
-      ;($('curColor') as HTMLInputElement).value = hex
+      setCurHex(hex)
       applyColorToSelection(hexToRgb(hex))
-      rebuildPalette()
+      repaintPalette()
     }
     sw.oncontextmenu = e => { e.preventDefault(); removeSwatch(hex) }
     bar.append(sw)
   }
 }
+
+// The grid. Every slot exists whether or not it holds a colour, because an
+// empty slot is the affordance: clicking one is how a palette gets built.
+function rebuildPalGrid() {
+  const g = $('palGrid')
+  g.innerHTML = ''
+  const cur = curHex()
+  doc.palette.forEach((hex, i) => {
+    const sw = document.createElement('i')
+    if (hex) {
+      sw.style.background = hex
+      sw.title = hex + ' — click to use, ⌥-click to empty'
+      if (hex === cur) sw.className = 'cur'
+      sw.onclick = e => {
+        if (e.altKey) { doc.palette[i] = null; repaintPalette(); return }
+        setCurHex(hex)
+        applyColorToSelection(hexToRgb(hex))
+        repaintPalette()
+      }
+      sw.oncontextmenu = e => { e.preventDefault(); doc.palette[i] = null; repaintPalette() }
+    } else {
+      sw.className = 'mt'
+      sw.title = 'Empty — click to choose a color'
+      // A real <input type=color> rather than a home-made picker: it is the
+      // one the OS already gives this user, including their saved colours.
+      sw.onclick = () => {
+        const inp = document.createElement('input')
+        inp.type = 'color'
+        inp.value = curHex()
+        inp.style.cssText = 'position:fixed;left:-9999px;opacity:0'
+        document.body.append(inp)
+        inp.oninput = () => { doc.palette[i] = inp.value.toLowerCase(); setCurHex(inp.value.toLowerCase()); repaintPalette() }
+        inp.onblur = () => inp.remove()
+        inp.click()
+      }
+    }
+    g.append(sw)
+  })
+}
 const removeSwatch = (hex: string) => {
-  doc.palette = doc.palette.filter(h => h !== hex)
-  savePalette(); rebuildPalette()
+  doc.palette = doc.palette.map(h => (h === hex ? null : h))
+  repaintPalette()
+}
+// First free slot, so "+" and the eyedropper have somewhere obvious to go.
+function addSwatch(hex: string) {
+  hex = hex.toLowerCase()
+  if (doc.palette.includes(hex)) return
+  const i = doc.palette.indexOf(null)
+  if (i < 0) { status('Palette is full — empty a slot first (⌥-click it)'); return }
+  doc.palette[i] = hex
+  repaintPalette()
 }
 // Clicking a swatch recolours the selected fill straight away -- otherwise you
 // would pick a colour and then still have to go and apply it.
@@ -1598,22 +1712,112 @@ function applyColorToSelection(c: [number, number, number]) {
   pushUndo({ label: 'recolor', undo: () => { r.color = prev; rebuildFills(); rebuildPanel() } })
   rebuildFills(); rebuildPanel()
 }
-$('bPalAdd').onclick = () => {
-  const hex = ($('curColor') as HTMLInputElement).value.toLowerCase()
-  if (!doc.palette.includes(hex)) doc.palette.push(hex)
-  savePalette(); rebuildPalette()
-}
+$('bPalAdd').onclick = () => addSwatch(curHex())
 $('bPalPull').onclick = () => {
   // Order by area so the palette reads big-shapes-first rather than by id.
   const seen = new Set<string>()
-  doc.palette = doc.roots().filter(r => !r.deleted && !r.isBg)
+  const used = doc.roots().filter(r => !r.deleted && !r.isBg)
     .map(r => rgbToHex(r.color).toLowerCase())
     .filter(h => !seen.has(h) && seen.add(h))
-    .slice(0, 40)
-  savePalette(); rebuildPalette()
-  status(`Palette: ${doc.palette.length} colors from the current fills`)
+  doc.palette = normalizePalette(used)
+  repaintPalette()
+  status(`Palette: ${Math.min(used.length, PAL_SLOTS)} colors from the current fills` +
+         (used.length > PAL_SLOTS ? ` (${used.length - PAL_SLOTS} more did not fit)` : ''))
 }
-$('curColor').oninput = () => { rebuildPalette(); view.shapePreview = shapeTint() }
+$('bPalClear').onclick = () => { doc.palette = normalizePalette([]); repaintPalette() }
+
+// A palette outlives the app it was made in, so it has to be a file. Written as
+// plain JSON; read back from anything with #rrggbb in it, which covers our own
+// files and a GIMP/Krita .gpl without needing a parser per format.
+$('bPalSave').onclick = () => {
+  const colors = doc.palette.filter(Boolean)
+  if (!colors.length) { status('Palette is empty — nothing to download'); return }
+  const a = document.createElement('a')
+  a.href = URL.createObjectURL(new Blob([JSON.stringify({ name: 'autoFlats palette', colors }, null, 2)],
+    { type: 'application/json' }))
+  a.download = 'palette.json'
+  a.click()
+  URL.revokeObjectURL(a.href)
+}
+$('bPalLoad').onclick = () => $<HTMLInputElement>('palFile').click()
+$<HTMLInputElement>('palFile').onchange = async e => {
+  const f = (e.target as HTMLInputElement).files?.[0]
+  if (!f) return
+  ;(e.target as HTMLInputElement).value = '' // so re-picking the same file fires again
+  const text = await f.text()
+  let found: string[] = []
+  try {
+    const j = JSON.parse(text)
+    found = (Array.isArray(j) ? j : j.colors ?? []).filter(isHex)
+  } catch { /* not ours: fall through to scraping */ }
+  if (!found.length) found = (text.match(/#[0-9a-fA-F]{6}\b/g) ?? [])
+  const seen = new Set<string>()
+  found = found.map(h => h.toLowerCase()).filter(h => !seen.has(h) && seen.add(h))
+  if (!found.length) { status(`No colors found in ${f.name}`); return }
+  doc.palette = normalizePalette(found)
+  repaintPalette()
+  status(`Palette: ${Math.min(found.length, PAL_SLOTS)} colors from ${f.name}`)
+}
+
+// The reference image. Not a palette of swatches but a picture to pick out of,
+// which is how most colourists actually choose: from a photo, a colour script
+// or a frame of the film, not from a grid.
+const refCv = $<HTMLCanvasElement>('refCv')
+let refData: ImageData | null = null
+async function setReference(src: Blob | File) {
+  const bmp = await createImageBitmap(src)
+  // Fit the panel width; the picked colour comes from these pixels, so a
+  // downscale is a slight blur of the source -- fine for choosing a tone.
+  const w = Math.min(bmp.width, 320), h = Math.max(1, Math.round(bmp.height * w / bmp.width))
+  refCv.width = w; refCv.height = h
+  const c = refCv.getContext('2d')!
+  // On white, because a transparent PNG otherwise reads as pure black wherever
+  // there is nothing -- and the colour you see is the colour you must get.
+  c.fillStyle = '#fff'
+  c.fillRect(0, 0, w, h)
+  c.drawImage(bmp, 0, 0, w, h)
+  refData = c.getImageData(0, 0, w, h)
+  bmp.close()
+  $('refWrap').classList.add('has')
+}
+function pickFromReference(e: PointerEvent) {
+  if (!refData) return
+  const r = refCv.getBoundingClientRect()
+  const x = Math.round((e.clientX - r.left) * refCv.width / r.width)
+  const y = Math.round((e.clientY - r.top) * refCv.height / r.height)
+  if (x < 0 || y < 0 || x >= refCv.width || y >= refCv.height) return
+  const o = (y * refCv.width + x) * 4, d = refData.data
+  setCurHex(rgbToHex([d[o], d[o + 1], d[o + 2]]))
+  rebuildPalette(); rebuildPalGrid()
+}
+refCv.onpointerdown = e => {
+  try { refCv.setPointerCapture(e.pointerId) } catch { /* stale pointer */ }
+  pickFromReference(e)
+}
+// Dragging scrubs the colour, so a tone can be hunted for rather than hit.
+refCv.onpointermove = e => { if (e.buttons) pickFromReference(e) }
+// Double-click sends it to the palette: picking and keeping are different acts.
+refCv.ondblclick = () => addSwatch(curHex())
+$('refWrap').ondragover = e => e.preventDefault()
+$('refWrap').ondrop = e => {
+  e.preventDefault(); e.stopPropagation() // the whole window is a line-art drop target
+  const f = e.dataTransfer?.files?.[0]
+  if (f?.type.startsWith('image/')) setReference(f)
+}
+// Paste anywhere, but only while the palette panel is open -- otherwise a paste
+// meant for a rename field would be swallowed by an invisible image slot.
+addEventListener('paste', e => {
+  if ($('palPanel').hidden) return
+  for (const it of e.clipboardData?.items ?? []) {
+    if (it.type.startsWith('image/')) {
+      const f = it.getAsFile()
+      if (f) { e.preventDefault(); setReference(f); status('Reference image pasted — click it to pick colors') }
+      return
+    }
+  }
+})
+
+$('curColor').oninput = () => { rebuildPalette(); rebuildPalGrid(); view.shapePreview = shapeTint() }
 const shapeTint = () => {
   const [r, g, b] = hexToRgb(($('curColor') as HTMLInputElement).value)
   return `rgba(${r},${g},${b},0.45)`
@@ -1631,12 +1835,60 @@ function setAdvanced(open: boolean) {
 $('bAdv').onclick = () => setAdvanced(!!$('adv').hidden)
 try { if (localStorage.getItem(ADV_KEY)) setAdvanced(true) } catch { /* private mode */ }
 
+// ---------- floating panels ----------
+// One at a time: they share the same corner, and two overlapping popovers over
+// the layers list is worse than a click to swap between them.
+function showPop(id: string, open: boolean) {
+  for (const p of ['palPanel', 'wcPanel']) $(p).hidden = p !== id || !open
+}
+const togglePop = (id: string) => showPop(id, !!$(id).hidden)
+$('bPalPanel').onclick = () => togglePop('palPanel')
+$('bWcPanel').onclick = () => togglePop('wcPanel')
+$('bPalClose').onclick = () => showPop('', false)
+$('bWcClose').onclick = () => showPop('', false)
+
+// ---------- watercolor ----------
+const WC_KEY = 'autoflats.wc'
+let wcParams: Watercolor = { ...WATERCOLOR }
+const wcOn = () => $<HTMLInputElement>('cWater').checked
+const wcPreviewOn = () => wcOn() && $<HTMLInputElement>('cWcPrev').checked
+
+function syncWcUi() {
+  $<HTMLInputElement>('sWcPool').value = '' + Math.round(wcParams.pool * 100)
+  $<HTMLInputElement>('sWcGrain').value = '' + Math.round(wcParams.grain * 100)
+  $<HTMLInputElement>('sWcBloom').value = '' + Math.round(wcParams.bloom * 100)
+  $('vWcPool').textContent = wcParams.pool.toFixed(2)
+  $('vWcGrain').textContent = wcParams.grain.toFixed(2)
+  $('vWcBloom').textContent = wcParams.bloom.toFixed(2)
+}
+function readWcUi() {
+  wcParams = {
+    pool: +$<HTMLInputElement>('sWcPool').value / 100,
+    grain: +$<HTMLInputElement>('sWcGrain').value / 100,
+    bloom: +$<HTMLInputElement>('sWcBloom').value / 100,
+  }
+  try { localStorage.setItem(WC_KEY, JSON.stringify(wcParams)) } catch { /* private mode */ }
+  syncWcUi()
+  rebuildFills()
+}
+for (const id of ['sWcPool', 'sWcGrain', 'sWcBloom']) $(id).oninput = readWcUi
+$('bWcReset').onclick = () => { wcParams = { ...WATERCOLOR }; syncWcUi(); readWcUi() }
+$('cWcPrev').onchange = () => rebuildFills()
+$('cWater').onchange = () => { rebuildFills(); if (wcOn()) showPop('wcPanel', true) }
+try {
+  const raw = localStorage.getItem(WC_KEY)
+  if (raw) { const j = JSON.parse(raw); wcParams = { pool: +j.pool || 0, grain: +j.grain || 0, bloom: +j.bloom || 0 } }
+} catch { /* private mode or corrupt */ }
+syncWcUi()
+
 $('bUndo').onclick = doUndo
 $('tPan').onclick = () => setTool('pan')
 loadPalette()
 rebuildPalette()
+rebuildPalGrid()
 view.shapePreview = shapeTint()
 $('tFill').onclick = () => setTool('fill')
+$('tRecolor').onclick = () => setTool('recolor')
 $('tBarrier').onclick = () => setTool('barrier')
 $('tEraser').onclick = () => setTool('eraser')
 $('tMerge').onclick = () => setTool('merge')
@@ -1685,6 +1937,7 @@ addEventListener('keydown', e => {
   const k = e.key.toLowerCase()
   if (k === 'v') setTool('pan')
   else if (k === 'b') setTool('fill')
+  else if (k === 'c') setTool('recolor')
   else if (k === 'g') setTool('barrier')
   else if (k === 'e') setTool('eraser')
   else if (k === 'm') setTool('merge')

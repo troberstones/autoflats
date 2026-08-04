@@ -62,6 +62,34 @@
   #pal { display: inline-flex; gap: 3px; flex-wrap: wrap; max-width: 40vw; }
   #pal i { width: 18px; height: 18px; border-radius: 3px; border: 1px solid #0006; cursor: pointer; display: block; }
   #pal i.cur { outline: 2px solid #fff; outline-offset: 1px; }
+  /* Floating panels. Anchored under the menu on the right, over the layers
+     list: they are transient editors, and the alternative -- another permanent
+     bar -- is what the Advanced disclosure already exists to avoid. */
+  .pop { position: fixed; top: 42px; right: 8px; z-index: 40; width: clamp(220px, 26vw, 300px);
+         background: #2b2b2b; border: 1px solid #555; border-radius: 6px; padding: 8px;
+         box-shadow: 0 8px 28px #000a; display: flex; flex-direction: column; gap: 6px; }
+  .pop[hidden] { display: none; }
+  .pop h4 { font-size: 11px; letter-spacing: .04em; text-transform: uppercase; color: #9ab;
+            display: flex; align-items: center; gap: 6px; }
+  .pop h4 button { margin-left: auto; }
+  .pop .prow { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .pop label.s { justify-content: space-between; }
+  .pop input[type=range] { width: 110px; }
+  .pop input[type=number] { width: 62px; background: #1c1c1c; color: #ddd; border: 1px solid #555; border-radius: 3px; padding: 2px 4px; font: inherit; }
+  #palGrid { display: grid; grid-template-columns: repeat(8, 1fr); gap: 3px; }
+  #palGrid i { aspect-ratio: 1; border-radius: 3px; border: 1px solid #0006; cursor: pointer; display: block; position: relative; }
+  /* An empty slot has to read as "click me", not as a black swatch. */
+  #palGrid i.mt { background: repeating-linear-gradient(45deg, #333 0 4px, #3a3a3a 4px 8px); border-style: dashed; border-color: #666; }
+  #palGrid i.cur { outline: 2px solid #fff; outline-offset: 1px; }
+  #refWrap { position: relative; border: 1px dashed #666; border-radius: 4px; min-height: 96px;
+             display: flex; align-items: center; justify-content: center; overflow: hidden; background: #242424; }
+  #refWrap.has { border-style: solid; cursor: crosshair; }
+  #refCv { max-width: 100%; display: block; }
+  /* An empty canvas is still a flex item, and it squeezed the hint into a
+     one-character-wide column down the right edge. */
+  #refWrap:not(.has) #refCv { display: none; }
+  #refWrap.has #refHint { display: none; }
+  #refHint { color: #888; font-size: 11px; text-align: center; padding: 8px; }
   /* pointer-events:none so the overlay can never eat the drag it is advertising */
   #dropzone { position: fixed; inset: 0; z-index: 50; display: none; pointer-events: none;
               align-items: center; justify-content: center; background: rgba(20,30,45,.82);
@@ -83,12 +111,13 @@
       <option value="region">one layer per fill</option>
       <option value="flat">single flat layer</option>
     </select>
-    <label class="s" title="Export the fills as watercolor washes instead of flat colour: pigment pooling darker at every edge, paper grain, and uneven blooms across the wash. Each layer stays its own fill, so a region can be restyled on its own in Photoshop."><input type="checkbox" id="cWater"> Watercolor</label>
+    <label class="s" title="Render the fills as watercolor washes instead of flat colour: pigment pooling darker at every edge, paper grain, and uneven blooms across the wash. Shown on the canvas and written into the PSD, one wash per fill, so a region can still be restyled on its own in Photoshop."><input type="checkbox" id="cWater"> Watercolor</label>
+    <button id="bWcPanel" class="link" title="Watercolor settings">⋯</button>
     <label class="s">Fill color <input type="color" id="curColor" value="#c8e0f0"></label>
     <label class="s" title="Bucket picks a random color per fill"><input type="checkbox" id="cRand"> Random</label>
     <span id="pal" title="Swatches. Click one to make it the current color; ⌥-click or right-click removes it."></span>
     <button id="bPalAdd" class="link" title="Add the current fill color to the palette">+</button>
-    <button id="bPalPull" class="link" title="Replace the palette with the colors already used by the fills">⤓ from fills</button>
+    <button id="bPalPanel" class="link" title="Open the palette editor">⋯</button>
     <span id="status">Open a line-art image to begin</span>
   </div>
   <div id="tools">
@@ -101,6 +130,7 @@
     <button id="tDel"     title="Delete fill (X): click a fill to remove it — it stops rendering and is left out of the PSD. Survives re-flatting; ⌘Z restores">🗑</button>
     <button id="tGroup"   title="Group fills (R): lasso around or a stroke through a set of fills — they export as a PSD folder and the group survives re-flatting">🔗</button>
     <button id="tShape"  title="Shape fill (F): draw a closed shape and it becomes a fill in the current color, on top of whatever was there. Remembered as the shape you drew, so it survives re-flatting.">⬠</button>
+    <button id="tRecolor" title="Recolor (C): click a fill to paint it the current palette color. Never carves a new fill out of the background the way the bucket does, so it is safe to sweep across a finished flat. Shift-click recolors every fill that shares that color; ⌥-click picks the color up instead.">🎨</button>
     <button id="tPick"    title="Select edits (S): click a remembered edit — a draw-merge stroke, a ✖ delete marker or a group lasso — or drag a box around several. Shift-click adds. Delete removes them. Turns on the Edits overlay.">⬚</button>
   </div>
   <div id="wrap"><canvas id="view"></canvas></div>
@@ -132,10 +162,35 @@
       <label class="s" id="lGpu" title="Run the growth stages on the GPU (WebGPU); falls back to CPU automatically" hidden><input type="checkbox" id="cGpu" checked> GPU</label>
       <label class="s"><input type="checkbox" id="cLines"> Show extracted lines</label>
       <label class="s" id="lSagView" title="Show the rubber sheet itself: black where it is pinned to the ink, brightening as it sags. Needs the Rubber sheet slider to be up."><input type="checkbox" id="cSagView"> Sag field <span id="vSagView" class="hint"></span></label>
-      <label class="s" title="How many watercolor layers to write before asking. A watercolor layer is a full-size textured image rather than a slab of one colour, so a few dozen is a normal PSD and a few hundred is a file Photoshop may not open. Past this you get a warning and the choice; switching export to one-layer-per-color is usually the better answer.">Max watercolor layers <input type="number" id="nWcMax" min="1" max="9999" value="30"></label>
       <label class="s" id="lZebra" title="Cut the sag field into this many flat bands, like contour lines on a map — every stripe is one step of roominess, so tight stripes mean the sheet is falling away fast and a wide stripe is a plateau. Alternate bands are dimmed so neighbours never blend. Bands are evenly spaced on the same log scale as the ramp. 0 = smooth ramp.">Zebra <input type="range" id="sZebra" min="0" max="32" value="0"><span id="vZebra">off</span></label>
     </div>
   </div>
+  <div id="wcPanel" class="pop" hidden>
+    <h4>Watercolor <button class="link" id="bWcClose">✕</button></h4>
+    <label class="s" title="Show the wash on the canvas as well as in the export. Costs one pass over the image whenever the fills change shape; recolouring stays instant either way.">Preview on canvas <input type="checkbox" id="cWcPrev" checked></label>
+    <label class="s" title="How much darker the pigment dries where the water stopped. This is the term that reads as 'painted' more than any other — a wash with no rim looks like flat colour with noise on it.">Pooling <input type="range" id="sWcPool" min="0" max="60" value="24"><span id="vWcPool" class="hint">0.24</span></label>
+    <label class="s" title="The tooth of the paper: high-frequency break-up across the whole wash. Also sets how much grain the white paper layer under the fills gets.">Paper grain <input type="range" id="sWcGrain" min="0" max="40" value="10"><span id="vWcGrain" class="hint">0.10</span></label>
+    <label class="s" title="Low-frequency unevenness — the patches where a wash dried heavier or lighter across a wide area.">Blooms <input type="range" id="sWcBloom" min="0" max="50" value="16"><span id="vWcBloom" class="hint">0.16</span></label>
+    <label class="s" title="How many watercolor layers to write before asking. A watercolor layer is a full-size textured image rather than a slab of one colour, so a few dozen is a normal PSD and a few hundred is a file Photoshop may not open. Past this you get a warning and the choice; switching export to one-layer-per-color is usually the better answer.">Max layers <input type="number" id="nWcMax" min="1" max="9999" value="30"></label>
+    <div class="prow"><button class="link" id="bWcReset">reset</button></div>
+  </div>
+
+  <div id="palPanel" class="pop" hidden>
+    <h4>Palette <button class="link" id="bPalClose">✕</button></h4>
+    <div id="palGrid" title="Click an empty slot to pick a color for it. Click a filled one to make it current; ⌥-click or right-click empties it."></div>
+    <div class="prow">
+      <button class="link" id="bPalPull" title="Replace the palette with the colors already used by the fills, largest area first">from fills</button>
+      <button class="link" id="bPalSave" title="Download this palette as a .json file">download</button>
+      <button class="link" id="bPalLoad" title="Load a palette — .json from here, or any file with #rrggbb colors in it, such as a GIMP/Krita .gpl">upload</button>
+      <button class="link" id="bPalClear" title="Empty every slot">clear</button>
+    </div>
+    <div id="refWrap" title="Reference image: click or drag on it to pick a color.">
+      <canvas id="refCv"></canvas>
+      <span id="refHint">Paste an image (⌘V) or drop one here, then click it to pick colors</span>
+    </div>
+  </div>
+  <input type="file" id="palFile" accept=".json,.gpl,.txt,.hex,application/json,text/plain" style="position:fixed;left:-9999px;width:1px;height:1px;opacity:0">
+
   <!-- visually hidden rather than display:none: Safari will not open the file
        picker for a hidden input when .click() is called from script -->
   <div id="dropzone">Drop line art to open</div>

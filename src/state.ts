@@ -54,7 +54,10 @@ export class Doc {
   mergeStrokes: MergeStroke[] = []
   mergePairs: MergePair[] = []
   shapeFills: ShapeFill[] = []
-  palette: string[] = []   // user's swatches, hex
+  // Fixed-length grid with holes: a null is an empty slot, not a missing one.
+  // Position is meaning in a palette -- skin in the top row, cloth in the next
+  // -- so clearing a swatch must leave a gap rather than shuffle everything up.
+  palette: (string | null)[] = []
   deleteMarks: DeleteMark[] = []
   nextEdit = 1
 
