@@ -111,3 +111,17 @@ and scrolls past a third of the height rather than squeezing the canvas, the
 layers panel scales with the viewport, and heights use dvh so nothing hides
 behind Safari's chrome. Rotation is view-only — it never touches the image or
 the export — and Fit resets it.
+
+## Credits
+
+Tool icons are pixel-art sets, used as drawn:
+
+- [Pixelarticons](https://pixelarticons.com) by halfmage — MIT — the hand,
+  pencil, overlapping squares, bin, chain, shapes, swatch and marquee.
+- [Streamline Pixel](https://icon-sets.iconify.design/streamline-pixel/) by
+  Streamline — [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/) — the
+  paint can, the rubber and the magnet, which Pixelarticons does not draw.
+
+They sit on different grids (24 and 32), so each icon keeps its own viewBox and
+the browser scales whole pixels rather than one set being resampled onto the
+other's grid.

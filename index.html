@@ -43,7 +43,9 @@
   #tools button:hover { background: #d0d0d0; }
   #tools button.active { background: #a0a0a0;
                          box-shadow: inset 1px 1px 0 #707070, inset -1px -1px 0 #e0e0e0; }
-  #tools button svg { display: block; width: 100%; height: auto; max-width: 22px; }
+  /* The icons paint in currentColor, so the button owns the ink -- black on the
+     grey face, and still black when it is pressed. */
+  #tools button svg { display: block; width: 100%; height: auto; max-width: 22px; color: #000; }
   label.s { display: flex; gap: 6px; align-items: center; white-space: nowrap; }
   input[type=range] { width: clamp(52px, 6.5vw, 90px); }
   /* Touch targets: a finger needs more than a 4px-tall slider thumb. */
@@ -68,6 +70,7 @@
   #status { margin-left: auto; color: #999; }
   #badge { color: #ffa030; display: none; }
   .hint { color: #888; font-size: 11px; }
+  .hint a { color: #7a9ec2; }
   label.s.off { opacity: .45; }
   .spin { color: #6cf; }
   #pal { display: inline-flex; gap: 3px; flex-wrap: wrap; max-width: 40vw; }
@@ -182,6 +185,12 @@
       <label class="s"><input type="checkbox" id="cLines"> Show extracted lines</label>
       <label class="s" id="lSagView" title="Show the rubber sheet itself: black where it is pinned to the ink, brightening as it sags. Needs the Rubber sheet slider to be up."><input type="checkbox" id="cSagView"> Sag field <span id="vSagView" class="hint"></span></label>
       <label class="s" id="lZebra" title="Cut the sag field into this many flat bands, like contour lines on a map — every stripe is one step of roominess, so tight stripes mean the sheet is falling away fast and a wide stripe is a plateau. Alternate bands are dimmed so neighbours never blend. Bands are evenly spaced on the same log scale as the ramp. 0 = smooth ramp.">Zebra <input type="range" id="sZebra" min="0" max="32" value="0"><span id="vZebra">off</span></label>
+      <!-- Streamline Pixel is CC BY 4.0, which asks for credit where the work
+           is used. Here rather than in the main bar: visible to anyone who
+           looks, without a licence notice sitting over the artwork. -->
+      <span class="hint">Tool icons: <a href="https://pixelarticons.com" target="_blank" rel="noopener">Pixelarticons</a> (MIT) and
+        <a href="https://icon-sets.iconify.design/streamline-pixel/" target="_blank" rel="noopener">Streamline Pixel</a>
+        (<a href="https://creativecommons.org/licenses/by/4.0/" target="_blank" rel="noopener">CC BY 4.0</a>)</span>
     </div>
   </div>
   <div id="wcPanel" class="pop" hidden>
