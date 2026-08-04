@@ -4,7 +4,7 @@ import { iconSvg } from './ui/icons.ts'
 import { extractInk, thresholdInk } from './core/ink.ts'
 import { smoothMask, skeletonize } from './core/morphology.ts'
 import { exportPsd, layerCount, ExportRegion, type ExportMode } from './core/psd.ts'
-import { WATERCOLOR, edgeDistance, washField, type Watercolor, type WashField } from './core/wash.ts'
+import { WATERCOLOR, washField, washLut, type Watercolor, type WashField } from './core/watercolor.ts'
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T
 
@@ -270,7 +270,7 @@ let washCache: { labels: Int32Array; key: string; field: WashField } | null = nu
 function washFor(lut: Int32Array): WashField {
   const key = lut.join(',') + '|' + JSON.stringify(wcParams)
   if (washCache && washCache.labels === doc.labels && washCache.key === key) return washCache.field
-  const field = washField(doc.W, doc.H, edgeDistance(doc.W, doc.H, doc.labels!, lut), wcParams)
+  const field = washField(doc.W, doc.H, doc.labels!, lut, wcParams)
   washCache = { labels: doc.labels!, key, field }
   return field
 }
@@ -288,17 +288,29 @@ function rebuildFills() {
   const d = fillsImg.data, lb = doc.labels
   const wash = wcPreviewOn() ? washFor(lut) : null
   if (wash) {
-    // The wash is a per-pixel multiply against a field that depends only on the
-    // SHAPE of the fills, so this stays a single cheap pass and recolouring
-    // does not re-synthesize anything. Composited onto the paper here rather
-    // than left translucent: the canvas behind this is dark grey, and a wash
-    // over dark grey is not the wash that gets exported over white.
+    // One lookup table per fill, shared between fills of the same colour: the
+    // simulation is expensive but it ran once, and what is left per pixel is
+    // an array index. That is what keeps recolouring under a wash instant.
+    const luts = new Map<number, Uint8Array>()
+    const lutOf: (Uint8Array | null)[] = new Array(n).fill(null)
+    for (let i = 1; i < n; i++) {
+      if (!ca[i]) continue
+      const key = (cr[i] << 16) | (cg[i] << 8) | cb[i]
+      let l = luts.get(key)
+      if (!l) luts.set(key, l = washLut([cr[i], cg[i], cb[i]]))
+      lutOf[i] = l
+    }
+    // Composited onto the paper here rather than left translucent: the canvas
+    // behind this is dark grey, and a wash over dark grey is not the wash that
+    // gets exported over white.
     for (let i = 0; i < lb.length; i++) {
-      const id = lb[i], o = i * 4, k = wash.k[i], p = wash.paper[i], a = wash.a[i] / 255
-      d[o] = cr[id] * k * a + p * (1 - a)
-      d[o + 1] = cg[id] * k * a + p * (1 - a)
-      d[o + 2] = cb[id] * k * a + p * (1 - a)
-      d[o + 3] = ca[id]
+      const id = lb[i], o = i * 4, l = lutOf[id]
+      if (!l) { d[o + 3] = 0; continue }
+      const q = wash.d[i] * 4, a = l[q + 3] / 255, p = wash.paper[i]
+      d[o] = l[q] * a + p * (1 - a)
+      d[o + 1] = l[q + 1] * a + p * (1 - a)
+      d[o + 2] = l[q + 2] * a + p * (1 - a)
+      d[o + 3] = 255
     }
   } else {
     for (let i = 0; i < lb.length; i++) {
@@ -2064,36 +2076,49 @@ $('bPalClose').onclick = () => showPop('', false)
 $('bWcClose').onclick = () => showPop('', false)
 
 // ---------- watercolor ----------
-const WC_KEY = 'autoflats.wc'
+const WC_KEY = 'autoflats.wc2'   // v1 stored pool/grain/bloom, which no longer exist
 let wcParams: Watercolor = { ...WATERCOLOR }
 const wcOn = () => $<HTMLInputElement>('cWater').checked
 const wcPreviewOn = () => wcOn() && $<HTMLInputElement>('cWcPrev').checked
 
+const WC_SLIDERS: [keyof Watercolor, string, string][] = [
+  ['wetness', 'sWcWet', 'vWcWet'],
+  ['edge', 'sWcEdge', 'vWcEdge'],
+  ['granulation', 'sWcGran', 'vWcGran'],
+  ['bloom', 'sWcBloom', 'vWcBloom'],
+]
 function syncWcUi() {
-  $<HTMLInputElement>('sWcPool').value = '' + Math.round(wcParams.pool * 100)
-  $<HTMLInputElement>('sWcGrain').value = '' + Math.round(wcParams.grain * 100)
-  $<HTMLInputElement>('sWcBloom').value = '' + Math.round(wcParams.bloom * 100)
-  $('vWcPool').textContent = wcParams.pool.toFixed(2)
-  $('vWcGrain').textContent = wcParams.grain.toFixed(2)
-  $('vWcBloom').textContent = wcParams.bloom.toFixed(2)
-}
-function readWcUi() {
-  wcParams = {
-    pool: +$<HTMLInputElement>('sWcPool').value / 100,
-    grain: +$<HTMLInputElement>('sWcGrain').value / 100,
-    bloom: +$<HTMLInputElement>('sWcBloom').value / 100,
+  for (const [k, sid, vid] of WC_SLIDERS) {
+    $<HTMLInputElement>(sid).value = '' + Math.round(wcParams[k] * 100)
+    $(vid).textContent = wcParams[k].toFixed(2)
   }
+}
+// Re-running the fluid is a few hundred milliseconds, so the numbers move with
+// the thumb and the wash follows a moment after the thumb stops. Running it on
+// every input event instead just queues the drag up behind itself and the
+// slider stops tracking the finger, which is worse than a short wait.
+let wcTimer = 0
+function readWcUi(now = false) {
+  for (const [k, sid] of WC_SLIDERS) wcParams[k] = +$<HTMLInputElement>(sid).value / 100
   try { localStorage.setItem(WC_KEY, JSON.stringify(wcParams)) } catch { /* private mode */ }
   syncWcUi()
-  rebuildFills()
+  clearTimeout(wcTimer)
+  if (now) rebuildFills()
+  else wcTimer = window.setTimeout(rebuildFills, 140)
 }
-for (const id of ['sWcPool', 'sWcGrain', 'sWcBloom']) $(id).oninput = readWcUi
-$('bWcReset').onclick = () => { wcParams = { ...WATERCOLOR }; syncWcUi(); readWcUi() }
+for (const [, sid] of WC_SLIDERS) {
+  $(sid).oninput = () => readWcUi()
+  $(sid).onchange = () => readWcUi(true)   // released: settle on the real thing
+}
+$('bWcReset').onclick = () => { wcParams = { ...WATERCOLOR }; syncWcUi(); readWcUi(true) }
 $('cWcPrev').onchange = () => rebuildFills()
 $('cWater').onchange = () => { rebuildFills(); if (wcOn()) showPop('wcPanel', true) }
 try {
   const raw = localStorage.getItem(WC_KEY)
-  if (raw) { const j = JSON.parse(raw); wcParams = { pool: +j.pool || 0, grain: +j.grain || 0, bloom: +j.bloom || 0 } }
+  if (raw) {
+    const j = JSON.parse(raw)
+    for (const [k] of WC_SLIDERS) if (typeof j[k] === 'number') wcParams[k] = Math.max(0, Math.min(1, j[k]))
+  }
 } catch { /* private mode or corrupt */ }
 syncWcUi()
 

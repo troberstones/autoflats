@@ -1,5 +1,5 @@
 import { writePsd, type Psd, type Layer } from 'ag-psd'
-import { edgeDistance, washField, type Watercolor } from './wash.ts'
+import { washField, washLut, type Watercolor } from './watercolor.ts'
 
 export interface ExportRegion {
   id: number; color: [number, number, number]; name: string; hidden: boolean
@@ -43,19 +43,29 @@ export function exportPsd(W: number, H: number, labels: Int32Array, rootOf: Int3
                           wc: Watercolor | null = null): ArrayBuffer {
   const N = W * H
   // The same field the canvas previews, so what is exported is what was seen.
-  const wash = wc ? washField(W, H, edgeDistance(W, H, labels, rootOf), wc) : null
+  const wash = wc ? washField(W, H, labels, rootOf, wc) : null
 
+  const byRoot = new Map<number, ExportRegion>()
+  for (const r of regions) byRoot.set(r.id, r)
+  const ckey = (c: [number, number, number]) => (c[0] << 16) | (c[1] << 8) | c[2]
+
+  // One 256-entry table per distinct colour, not per fill: fills that share a
+  // colour share a table, and a table is built once however many pixels wear it.
+  const luts = new Map<number, Uint8Array>()
+  const lutFor = (c: [number, number, number]): Uint8Array => {
+    const k = ckey(c)
+    let l = luts.get(k)
+    if (!l) luts.set(k, l = washLut(c))
+    return l
+  }
   const shade = (i: number, c: [number, number, number], out: Uint8ClampedArray, o: number): void => {
     if (!wash) {
       out[o] = c[0]; out[o + 1] = c[1]; out[o + 2] = c[2]; out[o + 3] = 255
       return
     }
-    const k = wash.k[i]
-    out[o] = c[0] * k; out[o + 1] = c[1] * k; out[o + 2] = c[2] * k; out[o + 3] = wash.a[i]
+    const l = lutFor(c), q = wash.d[i] * 4
+    out[o] = l[q]; out[o + 1] = l[q + 1]; out[o + 2] = l[q + 2]; out[o + 3] = l[q + 3]
   }
-  const byRoot = new Map<number, ExportRegion>()
-  for (const r of regions) byRoot.set(r.id, r)
-  const ckey = (c: [number, number, number]) => (c[0] << 16) | (c[1] << 8) | c[2]
 
   // In the merged modes a hidden fill could not be toggled back on, so it is
   // left out of the export entirely; per-region keeps it as a hidden layer.

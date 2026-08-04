@@ -17,7 +17,7 @@ import { finalizeRegions, type RegionInfo } from '../src/core/regions.ts'
 import { membraneSag } from '../src/core/membrane.ts'
 import { sagSegment } from '../src/core/sag.ts'
 import { exportPsd, layerCount, type ExportRegion, type ExportMode } from '../src/core/psd.ts'
-import { WATERCOLOR, washField, edgeDistance, type Watercolor } from '../src/core/wash.ts'
+import { WATERCOLOR, washField, washLut, DMAX, type Watercolor } from '../src/core/watercolor.ts'
 
 // ---------- the shared invariant check ----------
 // Every one of these held false at some point while the GPU growth path was
@@ -232,7 +232,7 @@ test('psd: layerCount predicts what the export actually writes', () => {
   }
 })
 
-test('psd: watercolor pools pigment at the edges and repeats exactly', () => {
+test('psd: a watercolor export varies across a fill and repeats exactly', () => {
   const { W, H, labels, rootOf, ink } = tinyDoc()
   const read = (wc: Watercolor | null) => {
     const psd = readPsd(exportPsd(W, H, labels, rootOf, REGIONS, ink, 'flat', wc),
@@ -241,40 +241,60 @@ test('psd: watercolor pools pigment at the edges and repeats exactly', () => {
     return (l.imageData ?? l.canvas?.getContext('2d')?.getImageData(0, 0, l.right! - l.left!, l.bottom! - l.top!))!
   }
   const flatImg = read(null), wet = read(WATERCOLOR)
-  const lum = (d: ImageData, x: number, y: number) => {
-    const o = ((y - 0) * d.width + x) * 4
-    return (d.data[o] + d.data[o + 1] + d.data[o + 2]) / 3
+  // flat mode puts both fills on one layer, so a plain export has exactly the
+  // two colours that were asked for and nothing in between; a wash has a range.
+  const tones = (d: ImageData) => new Set([...d.data].filter((_, k) => k % 4 === 0))
+  eq(tones(flatImg).size, 2, 'a plain export is flat colour, one tone per fill')
+  ok(tones(wet).size > 6, `a wash must vary, got ${tones(wet).size} tones`)
+  // Deterministic, or the file would not match the preview it was judged from.
+  eq([...wet.data].join(), [...read(WATERCOLOR).data].join(), 'watercolor must be reproducible')
+})
+
+test('wash: the pigment field depends on shape alone, and repeats exactly', () => {
+  // The preview design rests on this: the simulation is cached against the
+  // shape of the fills and recolouring is a table lookup. If the field ever
+  // depended on the colours, every recolour would show a stale wash -- and if
+  // it were not deterministic, the export would not match what was on screen.
+  const { W, H, labels, rootOf } = tinyDoc()
+  const a = washField(W, H, labels, rootOf, WATERCOLOR)
+  const b = washField(W, H, labels, rootOf, WATERCOLOR)
+  eq([...a.d].join(), [...b.d].join(), 'same shape and settings must give the same field')
+  ok(new Set(a.d).size > 8, 'the wash must actually vary across the image')
+})
+
+test('wash: the simulation banks pigment at the rim of each wash', () => {
+  // Edge darkening is the effect that reads as watercolor more than any other,
+  // and unlike the version this replaced it is not drawn -- the water is
+  // pushed outward and the pigment it carries dries where it stops. So the
+  // test is on the outcome: the rim must end up denser than the middle.
+  const W = 64, H = 64
+  const labels = new Int32Array(W * H).fill(1)
+  const rootOf = new Int32Array([0, 1])
+  const f = washField(W, H, labels, rootOf, { ...WATERCOLOR, edge: 1 })
+  const ring = (r: number) => {
+    let sum = 0, n = 0
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+      const dx = Math.min(x, W - 1 - x), dy = Math.min(y, H - 1 - y)
+      if (Math.min(dx, dy) === r) { sum += f.d[y * W + x]; n++ }
+    }
+    return sum / n
   }
-  // a plain export is one value everywhere; the wash is not
-  eq(lum(flatImg, 1, 10), lum(flatImg, 10, 10), 'flat export must be a single colour')
-  const rim = lum(wet, 0, 10), mid = lum(wet, 10, 10)
-  ok(rim < mid, `pigment should dry darker at the edge (rim ${rim} vs interior ${mid})`)
-  // deterministic: exporting the same drawing twice must give the same painting
-  const again = read(WATERCOLOR)
-  eq([...wet.data].join(), [...again.data].join(), 'watercolor must be reproducible')
+  const rim = (ring(3) + ring(4) + ring(5)) / 3
+  const mid = (ring(20) + ring(24) + ring(28)) / 3
+  ok(rim > mid, `pigment should dry heavier at the rim (rim ${rim.toFixed(1)} vs middle ${mid.toFixed(1)})`)
 })
 
-test('wash: the field is independent of colour, so recolouring cannot change it', () => {
-  // The whole preview design rests on this: the wash is a multiply against a
-  // cached field, and the cache is keyed on shape, not on the palette. If the
-  // field ever depended on the colours, every recolour would silently show a
-  // stale wash.
-  const { W, H, labels, rootOf } = tinyDoc()
-  const a = washField(W, H, edgeDistance(W, H, labels, rootOf), WATERCOLOR)
-  const b = washField(W, H, edgeDistance(W, H, labels, rootOf), WATERCOLOR)
-  eq([...a.k].join(), [...b.k].join(), 'same shape and settings must give the same field')
-  // and it really does vary: a constant field would pass the line above too
-  ok(new Set(a.k).size > 100, 'the wash must actually vary across the image')
-})
-
-test('wash: settings move the field, and zeroed settings leave flat colour', () => {
-  const { W, H, labels, rootOf } = tinyDoc()
-  const dist = edgeDistance(W, H, labels, rootOf)
-  const off = washField(W, H, dist, { pool: 0, grain: 0, bloom: 0 })
-  ok([...off.k].every(k => k === 1), 'with every term at zero the wash must be a no-op multiply')
-  const deep = washField(W, H, dist, { ...WATERCOLOR, pool: 0.5 })
-  const shallow = washField(W, H, dist, { ...WATERCOLOR, pool: 0.1 })
-  ok(deep.k[0] < shallow.k[0], 'more pooling must darken the rim further')
+test('wash: the lookup table is the picked colour at density 1 and darker above', () => {
+  const lut = washLut([200, 120, 60])
+  const at = (d: number) => { const q = Math.round(d / DMAX * 255) * 4; return [lut[q], lut[q + 1], lut[q + 2]] }
+  const one = at(1)
+  ok(Math.abs(one[0] - 200) <= 2 && Math.abs(one[1] - 120) <= 2 && Math.abs(one[2] - 60) <= 2,
+    `density 1 must be the colour that was picked, got ${one}`)
+  const deep = at(1.6)
+  ok(deep[0] < one[0] && deep[1] < one[1] && deep[2] < one[2], 'more pigment must absorb more light')
+  // absorbing, not fading to grey: the channel that was already dark stays the
+  // darkest, and the gap between channels widens rather than closing
+  ok((one[0] - one[2]) < (deep[0] - deep[2]) || deep[2] === 0, 'pooling must saturate, not desaturate')
 })
 
 // ---------- the real sample art (optional) ----------
