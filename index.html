@@ -83,6 +83,7 @@
       <option value="region">one layer per fill</option>
       <option value="flat">single flat layer</option>
     </select>
+    <label class="s" title="Export the fills as watercolor washes instead of flat colour: pigment pooling darker at every edge, paper grain, and uneven blooms across the wash. Each layer stays its own fill, so a region can be restyled on its own in Photoshop."><input type="checkbox" id="cWater"> Watercolor</label>
     <label class="s">Fill color <input type="color" id="curColor" value="#c8e0f0"></label>
     <label class="s" title="Bucket picks a random color per fill"><input type="checkbox" id="cRand"> Random</label>
     <span id="pal" title="Swatches. Click one to make it the current color; ⌥-click or right-click removes it."></span>
@@ -131,6 +132,7 @@
       <label class="s" id="lGpu" title="Run the growth stages on the GPU (WebGPU); falls back to CPU automatically" hidden><input type="checkbox" id="cGpu" checked> GPU</label>
       <label class="s"><input type="checkbox" id="cLines"> Show extracted lines</label>
       <label class="s" id="lSagView" title="Show the rubber sheet itself: black where it is pinned to the ink, brightening as it sags. Needs the Rubber sheet slider to be up."><input type="checkbox" id="cSagView"> Sag field <span id="vSagView" class="hint"></span></label>
+      <label class="s" title="How many watercolor layers to write before asking. A watercolor layer is a full-size textured image rather than a slab of one colour, so a few dozen is a normal PSD and a few hundred is a file Photoshop may not open. Past this you get a warning and the choice; switching export to one-layer-per-color is usually the better answer.">Max watercolor layers <input type="number" id="nWcMax" min="1" max="9999" value="30"></label>
       <label class="s" id="lZebra" title="Cut the sag field into this many flat bands, like contour lines on a map — every stripe is one step of roominess, so tight stripes mean the sheet is falling away fast and a wide stripe is a plateau. Alternate bands are dimmed so neighbours never blend. Bands are evenly spaced on the same log scale as the ramp. 0 = smooth ramp.">Zebra <input type="range" id="sZebra" min="0" max="32" value="0"><span id="vZebra">off</span></label>
     </div>
   </div>

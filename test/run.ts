@@ -16,7 +16,7 @@ import { expandLabels } from '../src/core/expand.ts'
 import { finalizeRegions, type RegionInfo } from '../src/core/regions.ts'
 import { membraneSag } from '../src/core/membrane.ts'
 import { sagSegment } from '../src/core/sag.ts'
-import { exportPsd, type ExportRegion, type ExportMode } from '../src/core/psd.ts'
+import { exportPsd, layerCount, WATERCOLOR, type ExportRegion, type ExportMode, type Watercolor } from '../src/core/psd.ts'
 
 // ---------- the shared invariant check ----------
 // Every one of these held false at some point while the GPU growth path was
@@ -215,6 +215,42 @@ test('psd: hidden fills survive per-fill export and vanish from merged export', 
   const nameSet = (p: any) => new Set((p.children ?? []).flatMap((c: any) => c.children ? c.children.map((k: any) => k.name) : [c.name]))
   ok(nameSet(perFill).has('Right'), 'per-fill export keeps a hidden fill as a hidden layer')
   ok(!nameSet(flat).has('Right'), 'merged export drops hidden fills entirely')
+})
+
+test('psd: layerCount predicts what the export actually writes', () => {
+  const { W, H, labels, rootOf, ink } = tinyDoc()
+  // The warning the user sees before a watercolor export is computed from this
+  // number, so it has to agree with the file for every mode -- a prediction
+  // that drifts from reality is worse than no prediction.
+  for (const mode of ['region', 'color', 'flat'] as ExportMode[]) {
+    const psd = readPsd(exportPsd(W, H, labels, rootOf, REGIONS, ink, mode),
+      { skipLayerImageData: true, skipCompositeImageData: true, skipThumbnail: true })
+    const leaves = (psd.children ?? []).flatMap((c: any) => c.children ?? [c])
+      .filter((c: any) => !['Background', 'Line Art', 'Flats (merged)'].includes(c.name))
+    eq(layerCount(REGIONS, mode), leaves.length, `${mode}: predicted fill-layer count`)
+  }
+})
+
+test('psd: watercolor pools pigment at the edges and repeats exactly', () => {
+  const { W, H, labels, rootOf, ink } = tinyDoc()
+  const read = (wc: Watercolor | null) => {
+    const psd = readPsd(exportPsd(W, H, labels, rootOf, REGIONS, ink, 'flat', wc),
+      { skipCompositeImageData: true, skipThumbnail: true, useImageData: true })
+    const l = (psd.children ?? []).find(c => c.name === 'Flats')!
+    return (l.imageData ?? l.canvas?.getContext('2d')?.getImageData(0, 0, l.right! - l.left!, l.bottom! - l.top!))!
+  }
+  const flatImg = read(null), wet = read(WATERCOLOR)
+  const lum = (d: ImageData, x: number, y: number) => {
+    const o = ((y - 0) * d.width + x) * 4
+    return (d.data[o] + d.data[o + 1] + d.data[o + 2]) / 3
+  }
+  // a plain export is one value everywhere; the wash is not
+  eq(lum(flatImg, 1, 10), lum(flatImg, 10, 10), 'flat export must be a single colour')
+  const rim = lum(wet, 0, 10), mid = lum(wet, 10, 10)
+  ok(rim < mid, `pigment should dry darker at the edge (rim ${rim} vs interior ${mid})`)
+  // deterministic: exporting the same drawing twice must give the same painting
+  const again = read(WATERCOLOR)
+  eq([...wet.data].join(), [...again.data].join(), 'watercolor must be reproducible')
 })
 
 // ---------- the real sample art (optional) ----------

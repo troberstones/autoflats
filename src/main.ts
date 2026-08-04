@@ -2,7 +2,7 @@ import { Doc, Region, Stroke, UndoOp, type MergePair, type ShapeFill, paletteCol
 import { CanvasView, Tool } from './ui/canvasView.ts'
 import { extractInk, thresholdInk } from './core/ink.ts'
 import { smoothMask, skeletonize } from './core/morphology.ts'
-import { exportPsd, ExportRegion, type ExportMode } from './core/psd.ts'
+import { exportPsd, layerCount, WATERCOLOR, ExportRegion, type ExportMode } from './core/psd.ts'
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T
 
@@ -418,31 +418,37 @@ function startRename(row: HTMLElement) {
 // Panel order. Area-descending is the old behaviour and is still the right
 // default for finding the big shapes; the sweep is for naming, where you want
 // the list to follow the drawing the way your eye does. A diagonal sweep
-// (minX + minY) rather than strict reading order, because reading order sorts
-// on a single row of pixels: two fills whose tops differ by one pixel land far
-// apart in the list even though they sit side by side.
+// (cx + cy) rather than strict reading order, because reading order sorts on a
+// single row of pixels: two fills whose tops differ by one pixel land far apart
+// in the list even though they sit side by side.
+//
+// The sweep runs on the CENTROID, not the bounding box corner. A corner is the
+// most extreme pixel of a shape, so a long thin fill -- a strand of hair, a
+// cast shadow, an arm reaching up -- sorts by wherever its tip happens to
+// point, which is nowhere near where you would say the shape is. The centroid
+// is where the shape actually sits.
 type SortMode = 'area' | 'sweep'
 let sortMode: SortMode = 'sweep'
 let sweepCache: { key: string; at: Map<number, number> } | null = null
 
-// Top-left corner of each root's bounding box, in one pass over the labels.
+// Centroid of each root, in one pass over the labels.
 function sweepKeys(): Map<number, number> {
   const key = `${doc.labels ? doc.W * doc.H : 0}|${doc.rootLut().join(',')}`
   if (sweepCache && sweepCache.key === key) return sweepCache.at
   const at = new Map<number, number>()
   if (doc.labels) {
     const lut = doc.rootLut(), { W, H, labels } = doc
-    const minX = new Map<number, number>(), minY = new Map<number, number>()
+    const sx = new Map<number, number>(), sy = new Map<number, number>(), n = new Map<number, number>()
     for (let y = 0; y < H; y++) {
       for (let x = 0; x < W; x++) {
         const r = lut[labels[y * W + x]]
         if (!r) continue
-        if (!minY.has(r)) minY.set(r, y)          // first row wins: rows ascend
-        const mx = minX.get(r)
-        if (mx === undefined || x < mx) minX.set(r, x)
+        sx.set(r, (sx.get(r) ?? 0) + x)
+        sy.set(r, (sy.get(r) ?? 0) + y)
+        n.set(r, (n.get(r) ?? 0) + 1)
       }
     }
-    for (const [r, y] of minY) at.set(r, y + (minX.get(r) ?? 0))
+    for (const [r, c] of n) at.set(r, ((sx.get(r) ?? 0) + (sy.get(r) ?? 0)) / c)
   }
   sweepCache = { key, at }
   return at
@@ -452,8 +458,9 @@ function sortedRoots(): Region[] {
   const roots = doc.roots().filter(r => !r.deleted)
   if (sortMode === 'area') return roots
   const at = sweepKeys()
-  // Background last whatever the order: it starts at 0,0 and would otherwise
-  // always head the list, which is never what you want to name first.
+  // Background last whatever the order: it surrounds everything, so its
+  // centroid lands in the middle of the drawing and it would sort into the
+  // middle of the list, which is never where you want to meet it.
   return roots.sort((a, b) =>
     (a.isBg ? 1 : 0) - (b.isBg ? 1 : 0) ||
     (at.get(a.id) ?? 0) - (at.get(b.id) ?? 0))
@@ -1481,14 +1488,36 @@ async function loadFile(f: File) {
 
 async function doExport() {
   if (!doc.labels) return
-  status('Exporting…', true)
-  await new Promise(r => setTimeout(r))
-  const regions: ExportRegion[] = doc.roots().filter(r => !r.deleted).map(r => ({
+  // Layers come out in the panel's order. Reversed, because a PSD stacks
+  // bottom-first while Photoshop's layer list reads top-first: without the
+  // reverse, the fill at the top of this app's list lands at the bottom of
+  // theirs. Flats never overlap, so the order is organisation, not compositing.
+  const regions: ExportRegion[] = sortedRoots().reverse().map(r => ({
     id: r.id, color: r.color, name: r.name, hidden: !r.visible, isBg: r.isBg,
     group: r.group ? doc.groups.find(g => g.id === r.group)?.name : undefined,
   }))
   const mode = ($('expMode') as HTMLSelectElement).value as ExportMode
-  const blob = new Blob([exportPsd(doc.W, doc.H, doc.labels, doc.rootLut(), regions, doc.ink!, mode)], { type: 'image/vnd.adobe.photoshop' })
+
+  // Watercolor costs a full-size textured buffer per layer, so the layer count
+  // stops being a matter of taste and starts being whether the file opens at
+  // all. Warn and let it through rather than clamp: a hundred washes may be
+  // exactly what a big drawing needs, and the only person who knows is the one
+  // about to wait for it. Saying no here would just move the work off the tool.
+  const wc = ($<HTMLInputElement>('cWater')).checked
+  if (wc) {
+    const n = layerCount(regions, mode)
+    const max = Math.max(1, +$<HTMLInputElement>('nWcMax').value || 30)
+    if (n > max && !confirm(
+      `Watercolor would paint ${n} textured layers (limit ${max}).\n\n` +
+      `Each one is a full ${doc.W}×${doc.H} image, so the PSD will be large and may be slow ` +
+      `or impossible to open. Switching export to "one layer per color" is usually the better answer.\n\n` +
+      `Export ${n} layers anyway?`)) { status(`Export cancelled — ${n} watercolor layers, limit ${max}`); return }
+  }
+
+  status('Exporting…', true)
+  await new Promise(r => setTimeout(r))
+  const blob = new Blob([exportPsd(doc.W, doc.H, doc.labels, doc.rootLut(), regions, doc.ink!, mode,
+                                   wc ? WATERCOLOR : null)], { type: 'image/vnd.adobe.photoshop' })
   const name = doc.name + '.psd'
   const w = window as any
   if (w.showSaveFilePicker) {

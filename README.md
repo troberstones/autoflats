@@ -47,7 +47,7 @@ Needs a browser with module workers (Safari 15+, Chrome 80+, Firefox 114+).
    - **Auto-bridge gaps** — accept the suggested bridges automatically after each flat and re-flat. Every suggestion has already been proven to close a fill, so this is safe to leave on; it settles after a round or two, and ⌘Z undoes.
 3b. **Palette** (top bar, next to the color picker) — click a swatch to make it the current color and recolor the selected fill in one go, **+** adds the current color, **⤓ from fills** builds the palette out of the colors already in the drawing, and ⌥-click or right-click drops a swatch. Palettes are saved between sessions, since a palette outlives the drawing it was built for.
 
-3c. **The layers panel** sorts by a top-left sweep by default, so the list follows the drawing the way your eye reads it (largest-first is still in the dropdown). Double-click a name to rename in place; **Enter** commits and jumps to the next fill, so a whole drawing can be named without the mouse. **Renumber** renames everything to Fill 1..N in the current order.
+3c. **The layers panel** sorts by a top-left sweep by default, so the list follows the drawing the way your eye reads it (largest-first is still in the dropdown). The sweep runs on each fill's *centroid*, not its bounding box — a horn or a strand of hair would otherwise sort by wherever its tip happens to point. Double-click a name to rename in place; **Enter** commits and jumps to the next fill, so a whole drawing can be named without the mouse. **Renumber** renames everything to Fill 1..N in the current order.
 
 4. **Seeing what it did** (bottom bar, next to *Show extracted lines*):
    - **Sag field** — draw the rubber sheet itself instead of the fills: near-black where it's pinned to the ink, up through purple and red to pale yellow in the middle of the roomiest areas (log scale; the label says what full brightness is worth in pixels). A drawn area is visibly a basin, and a break in a stroke is visibly just a shallow notch between two of them — which is why the fills don't pour through it. Needs **Rubber sheet** to be up.
@@ -61,7 +61,11 @@ Needs a browser with module workers (Safari 15+, Chrome 80+, Firefox 114+).
    - **one layer per fill** — every fill stays independently editable, but they're nested in a group folder per color, so Photoshop shows a handful of folders instead of hundreds of loose layers.
    - **single flat layer** — everything merged onto one layer.
 
-   Hidden fills are kept as hidden layers in per-fill mode, and left out entirely in the merged modes (where you couldn't turn them back on).
+   Hidden fills are kept as hidden layers in per-fill mode, and left out entirely in the merged modes (where you couldn't turn them back on). Above the per-fill layers sits **Flats (merged)** — every fill on one layer with the background left out, transparent behind the figure, which is the layer you actually paint on once the flatting is right. Layers come out in the order the panel shows them.
+
+   **Watercolor** replaces the flat colour with a wash: pigment pooling darker at every edge, paper grain, and low-frequency blooms across the fill. Each layer is still its own fill, so a single region can be restyled in Photoshop. It's generated, not painted over — the same drawing always exports the same painting.
+
+   A wash costs a full-size textured image per layer, so a drawing with three hundred fills makes a PSD that may not open. Past **Max watercolor layers** (Advanced, default 30) you get the count and a choice: it warns, it doesn't clamp. If you want the wash on a busy drawing, switch to *one layer per color* first — that's the same painting at a tenth of the layers.
 
 ## How it works
 
