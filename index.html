@@ -67,7 +67,8 @@
      bar -- is what the Advanced disclosure already exists to avoid. */
   .pop { position: fixed; top: 42px; right: 8px; z-index: 40; width: clamp(220px, 26vw, 300px);
          background: #2b2b2b; border: 1px solid #555; border-radius: 6px; padding: 8px;
-         box-shadow: 0 8px 28px #000a; display: flex; flex-direction: column; gap: 6px; }
+         box-shadow: 0 8px 28px #000a; display: flex; flex-direction: column; gap: 6px;
+         max-height: calc(100dvh - 56px); overflow-y: auto; overscroll-behavior: contain; }
   .pop[hidden] { display: none; }
   .pop h4 { font-size: 11px; letter-spacing: .04em; text-transform: uppercase; color: #9ab;
             display: flex; align-items: center; gap: 6px; }
@@ -77,7 +78,14 @@
   .pop input[type=range] { width: 110px; }
   .pop input[type=number] { width: 62px; background: #1c1c1c; color: #ddd; border: 1px solid #555; border-radius: 3px; padding: 2px 4px; font: inherit; }
   #palGrid { display: grid; grid-template-columns: repeat(8, 1fr); gap: 3px; }
-  #palGrid i { aspect-ratio: 1; border-radius: 3px; border: 1px solid #0006; cursor: pointer; display: block; position: relative; }
+  /* touch-action + no callout: a press-and-hold on iPad must reach us as a
+     long press, not as the OS text-selection magnifier or a share sheet. */
+  #palGrid i { aspect-ratio: 1; border-radius: 3px; border: 1px solid #0006; cursor: pointer; display: block; position: relative;
+               touch-action: manipulation; user-select: none; -webkit-touch-callout: none; }
+  #palSliders { display: grid; gap: 1px; }
+  #palSliders label.s { gap: 4px; }
+  #palSliders input[type=range] { flex: 1; width: auto; min-width: 0; }
+  #palSliders span { width: 34px; text-align: right; }
   /* An empty slot has to read as "click me", not as a black swatch. */
   #palGrid i.mt { background: repeating-linear-gradient(45deg, #333 0 4px, #3a3a3a 4px 8px); border-style: dashed; border-color: #666; }
   #palGrid i.cur { outline: 2px solid #fff; outline-offset: 1px; }
@@ -177,7 +185,16 @@
 
   <div id="palPanel" class="pop" hidden>
     <h4>Palette <button class="link" id="bPalClose">✕</button></h4>
-    <div id="palGrid" title="Click an empty slot to pick a color for it. Click a filled one to make it current; ⌥-click or right-click empties it."></div>
+    <div id="palGrid" title="Click an empty slot to drop the current color into it. Click a filled one to make it current. To empty one: ⌥-click, right-click, or press and hold."></div>
+    <div class="hint" id="palHint">⌥-click, right-click or press-and-hold a swatch to empty it</div>
+    <div id="palSliders">
+      <label class="s">R <input type="range" id="sPR" min="0" max="255" value="0"><span id="vPR" class="hint">0</span></label>
+      <label class="s">G <input type="range" id="sPG" min="0" max="255" value="0"><span id="vPG" class="hint">0</span></label>
+      <label class="s">B <input type="range" id="sPB" min="0" max="255" value="0"><span id="vPB" class="hint">0</span></label>
+      <label class="s">H <input type="range" id="sPH" min="0" max="360" value="0"><span id="vPH" class="hint">0°</span></label>
+      <label class="s">S <input type="range" id="sPS" min="0" max="100" value="0"><span id="vPS" class="hint">0%</span></label>
+      <label class="s">L <input type="range" id="sPL" min="0" max="100" value="0"><span id="vPL" class="hint">0%</span></label>
+    </div>
     <div class="prow">
       <button class="link" id="bPalPull" title="Replace the palette with the colors already used by the fills, largest area first">from fills</button>
       <button class="link" id="bPalSave" title="Download this palette as a .json file">download</button>

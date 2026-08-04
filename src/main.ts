@@ -1,4 +1,4 @@
-import { Doc, Region, Stroke, UndoOp, type MergePair, type ShapeFill, paletteColor, rgbToHex, hexToRgb, hslToRgb } from './state.ts'
+import { Doc, Region, Stroke, UndoOp, type MergePair, type ShapeFill, paletteColor, rgbToHex, hexToRgb, hslToRgb, rgbToHsl } from './state.ts'
 import { CanvasView, Tool } from './ui/canvasView.ts'
 import { extractInk, thresholdInk } from './core/ink.ts'
 import { smoothMask, skeletonize } from './core/morphology.ts'
@@ -1610,7 +1610,13 @@ const PAL_KEY = 'autoflats.palette'
 const PAL_SLOTS = 40 // 5 rows of 8
 const isHex = (h: unknown): h is string => typeof h === 'string' && /^#[0-9a-f]{6}$/i.test(h)
 const curHex = () => ($('curColor') as HTMLInputElement).value.toLowerCase()
-const setCurHex = (hex: string) => { ($('curColor') as HTMLInputElement).value = hex; view.shapePreview = shapeTint() }
+// writeCur only moves the colour well; setCurHex also drags the R/G/B/H/S/L
+// sliders along. They are split because the sliders themselves call writeCur,
+// and a slider that rewrites its own value mid-drag snaps and jitters.
+const writeCur = (hex: string) => { ($('curColor') as HTMLInputElement).value = hex; view.shapePreview = shapeTint() }
+const setCurHex = (hex: string) => { writeCur(hex); syncSliders(hex) }
+// Which slot the sliders are editing. Null once its colour is gone.
+let palSel: number | null = null
 
 // Pad or trim to the grid. Older versions stored a dense array of colours with
 // no holes, and that reads correctly here as "the first N slots are filled".
@@ -1651,46 +1657,120 @@ function rebuildPalette() {
   }
 }
 
+// Press-and-hold, because a tablet has no ⌥ and no right button, and a palette
+// you can fill but not empty fills up. 550ms and an 8px slop: long enough not
+// to fire on a tap, short enough not to feel broken.
+const LONG_PRESS = 550
+let lpFired = false
+// Lifting after a hold still sends a click, and by then the swatch under the
+// finger is an EMPTY slot -- which would take the current colour and undo the
+// deletion on the spot. So the flag is cleared once per press, on the grid
+// itself in the capture phase, and every click handler in the grid honours it.
+$('palGrid').addEventListener('pointerdown', () => { lpFired = false }, true)
+function onLongPress(el: HTMLElement, run: () => void) {
+  let t = 0, sx = 0, sy = 0
+  const stop = () => { clearTimeout(t); t = 0 }
+  el.addEventListener('pointerdown', e => {
+    sx = e.clientX; sy = e.clientY
+    t = window.setTimeout(() => { lpFired = true; stop(); run() }, LONG_PRESS)
+  })
+  el.addEventListener('pointermove', e => { if (t && Math.hypot(e.clientX - sx, e.clientY - sy) > 8) stop() })
+  for (const ev of ['pointerup', 'pointercancel', 'pointerleave']) el.addEventListener(ev, stop)
+}
+
 // The grid. Every slot exists whether or not it holds a colour, because an
-// empty slot is the affordance: clicking one is how a palette gets built.
+// empty slot is the affordance: tapping one is how a palette gets built.
 function rebuildPalGrid() {
   const g = $('palGrid')
   g.innerHTML = ''
-  const cur = curHex()
   doc.palette.forEach((hex, i) => {
     const sw = document.createElement('i')
     if (hex) {
       sw.style.background = hex
-      sw.title = hex + ' — click to use, ⌥-click to empty'
-      if (hex === cur) sw.className = 'cur'
+      sw.title = hex + ' — click to use; ⌥-click, right-click or hold to empty'
+      // Selection is by SLOT, not by colour: two slots can hold the same
+      // colour, and the sliders have to know which one they are editing.
+      if (palSel === i) sw.className = 'cur'
+      const clear = () => { doc.palette[i] = null; if (palSel === i) palSel = null; repaintPalette() }
       sw.onclick = e => {
-        if (e.altKey) { doc.palette[i] = null; repaintPalette(); return }
+        if (lpFired) return // the hold already emptied it
+        if (e.altKey) { clear(); return }
+        palSel = i
         setCurHex(hex)
         applyColorToSelection(hexToRgb(hex))
         repaintPalette()
       }
-      sw.oncontextmenu = e => { e.preventDefault(); doc.palette[i] = null; repaintPalette() }
+      sw.oncontextmenu = e => { e.preventDefault(); clear() }
+      onLongPress(sw, () => { clear(); status('Swatch removed') })
     } else {
       sw.className = 'mt'
-      sw.title = 'Empty — click to choose a color'
-      // A real <input type=color> rather than a home-made picker: it is the
-      // one the OS already gives this user, including their saved colours.
+      sw.title = 'Empty — click to drop the current color in'
+      // Takes the current colour rather than opening a picker. Choosing a
+      // colour is what the well and the sliders are for; this is the act of
+      // keeping one, and it should cost a single tap.
       sw.onclick = () => {
-        const inp = document.createElement('input')
-        inp.type = 'color'
-        inp.value = curHex()
-        inp.style.cssText = 'position:fixed;left:-9999px;opacity:0'
-        document.body.append(inp)
-        inp.oninput = () => { doc.palette[i] = inp.value.toLowerCase(); setCurHex(inp.value.toLowerCase()); repaintPalette() }
-        inp.onblur = () => inp.remove()
-        inp.click()
+        if (lpFired) return // this click is the tail of a hold that just emptied this slot
+        doc.palette[i] = curHex(); palSel = i; repaintPalette()
       }
     }
     g.append(sw)
   })
 }
+
+// ---------- the R/G/B/H/S/L sliders ----------
+// Two views of one colour. Whichever set is being dragged is the authority,
+// and only the other set is rewritten -- rewriting a slider from a value it
+// just produced makes it stick and jump, because the round trip rounds.
+const SL = (id: string) => $<HTMLInputElement>(id)
+function syncSliders(hex: string) {
+  const [r, g, b] = hexToRgb(hex)
+  SL('sPR').value = '' + r; SL('sPG').value = '' + g; SL('sPB').value = '' + b
+  const [h, s, l] = rgbToHsl([r, g, b])
+  SL('sPH').value = '' + Math.round(h); SL('sPS').value = '' + Math.round(s * 100); SL('sPL').value = '' + Math.round(l * 100)
+  labelSliders()
+}
+function labelSliders() {
+  $('vPR').textContent = SL('sPR').value
+  $('vPG').textContent = SL('sPG').value
+  $('vPB').textContent = SL('sPB').value
+  $('vPH').textContent = SL('sPH').value + '°'
+  $('vPS').textContent = SL('sPS').value + '%'
+  $('vPL').textContent = SL('sPL').value + '%'
+}
+// A drag is one undo step, not one per pixel of travel: the region's colour is
+// updated live on every input, and the undo entry is pushed once, on release.
+let sliderUndo: { r: Region; color: [number, number, number] } | null = null
+function slidersChanged(rgb: [number, number, number]) {
+  const hex = rgbToHex(rgb)
+  writeCur(hex)
+  if (palSel !== null && doc.palette[palSel]) { doc.palette[palSel] = hex; savePalette(); rebuildPalette(); rebuildPalGrid() }
+  const r = doc.regions[doc.root(selected)]
+  if (r && !r.deleted) {
+    if (!sliderUndo) sliderUndo = { r, color: r.color }
+    r.color = rgb
+    rebuildFills(); rebuildPanel()
+  }
+  labelSliders()
+}
+for (const id of ['sPR', 'sPG', 'sPB']) SL(id).oninput = () => {
+  const rgb: [number, number, number] = [+SL('sPR').value, +SL('sPG').value, +SL('sPB').value]
+  const [h, s, l] = rgbToHsl(rgb)
+  SL('sPH').value = '' + Math.round(h); SL('sPS').value = '' + Math.round(s * 100); SL('sPL').value = '' + Math.round(l * 100)
+  slidersChanged(rgb)
+}
+for (const id of ['sPH', 'sPS', 'sPL']) SL(id).oninput = () => {
+  const rgb = hslToRgb(+SL('sPH').value, +SL('sPS').value / 100, +SL('sPL').value / 100)
+  SL('sPR').value = '' + rgb[0]; SL('sPG').value = '' + rgb[1]; SL('sPB').value = '' + rgb[2]
+  slidersChanged(rgb)
+}
+for (const id of ['sPR', 'sPG', 'sPB', 'sPH', 'sPS', 'sPL']) SL(id).onchange = () => {
+  const u = sliderUndo
+  sliderUndo = null
+  if (u) pushUndo({ label: 'recolor', undo: () => { u.r.color = u.color; rebuildFills(); rebuildPanel() } })
+}
 const removeSwatch = (hex: string) => {
   doc.palette = doc.palette.map(h => (h === hex ? null : h))
+  if (palSel !== null && !doc.palette[palSel]) palSel = null
   repaintPalette()
 }
 // First free slot, so "+" and the eyedropper have somewhere obvious to go.
@@ -1720,11 +1800,12 @@ $('bPalPull').onclick = () => {
     .map(r => rgbToHex(r.color).toLowerCase())
     .filter(h => !seen.has(h) && seen.add(h))
   doc.palette = normalizePalette(used)
+  palSel = null
   repaintPalette()
   status(`Palette: ${Math.min(used.length, PAL_SLOTS)} colors from the current fills` +
          (used.length > PAL_SLOTS ? ` (${used.length - PAL_SLOTS} more did not fit)` : ''))
 }
-$('bPalClear').onclick = () => { doc.palette = normalizePalette([]); repaintPalette() }
+$('bPalClear').onclick = () => { doc.palette = normalizePalette([]); palSel = null; repaintPalette() }
 
 // A palette outlives the app it was made in, so it has to be a file. Written as
 // plain JSON; read back from anything with #rrggbb in it, which covers our own
@@ -1755,6 +1836,7 @@ $<HTMLInputElement>('palFile').onchange = async e => {
   found = found.map(h => h.toLowerCase()).filter(h => !seen.has(h) && seen.add(h))
   if (!found.length) { status(`No colors found in ${f.name}`); return }
   doc.palette = normalizePalette(found)
+  palSel = null
   repaintPalette()
   status(`Palette: ${Math.min(found.length, PAL_SLOTS)} colors from ${f.name}`)
 }
@@ -1817,7 +1899,10 @@ addEventListener('paste', e => {
   }
 })
 
-$('curColor').oninput = () => { rebuildPalette(); rebuildPalGrid(); view.shapePreview = shapeTint() }
+// The well chooses a colour; it does not touch a swatch or a fill. That is the
+// division: the well is what you are about to paint with, the sliders adjust
+// the swatch you have selected.
+$('curColor').oninput = () => { syncSliders(curHex()); rebuildPalette(); rebuildPalGrid(); view.shapePreview = shapeTint() }
 const shapeTint = () => {
   const [r, g, b] = hexToRgb(($('curColor') as HTMLInputElement).value)
   return `rgba(${r},${g},${b},0.45)`
@@ -1886,6 +1971,7 @@ $('tPan').onclick = () => setTool('pan')
 loadPalette()
 rebuildPalette()
 rebuildPalGrid()
+syncSliders(curHex())
 view.shapePreview = shapeTint()
 $('tFill').onclick = () => setTool('fill')
 $('tRecolor').onclick = () => setTool('recolor')

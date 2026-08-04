@@ -101,6 +101,19 @@ export function hslToRgb(h: number, s: number, l: number): [number, number, numb
   return [Math.round((r + m) * 255), Math.round((g + m) * 255), Math.round((b + m) * 255)]
 }
 
+// h in 0..360, s and l in 0..1 -- the inverse of hslToRgb above. Grey comes
+// back with hue 0, which is the usual convention: there is no hue to recover.
+export function rgbToHsl([r, g, b]: [number, number, number]): [number, number, number] {
+  r /= 255; g /= 255; b /= 255
+  const mx = Math.max(r, g, b), mn = Math.min(r, g, b), l = (mx + mn) / 2
+  if (mx === mn) return [0, 0, l]
+  const d = mx - mn
+  const s = d / (1 - Math.abs(2 * l - 1))
+  let h = mx === r ? 60 * (((g - b) / d) % 6) : mx === g ? 60 * ((b - r) / d + 2) : 60 * ((r - g) / d + 4)
+  if (h < 0) h += 360
+  return [h, s, l]
+}
+
 export function rgbToHex([r, g, b]: [number, number, number]): string {
   return '#' + [r, g, b].map(v => v.toString(16).padStart(2, '0')).join('')
 }
