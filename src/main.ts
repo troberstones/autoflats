@@ -1,4 +1,4 @@
-import { Doc, Region, Stroke, UndoOp, type MergePair, type ShapeFill, type Recolor, paletteColor, rgbToHex, hexToRgb, hslToRgb, rgbToHsl } from './state.ts'
+import { Doc, Region, Stroke, UndoOp, type MergePair, type ShapeFill, type Recolor, paletteColor, anchorColor, rgbToHex, hexToRgb, hslToRgb, rgbToHsl } from './state.ts'
 import { CanvasView, Tool } from './ui/canvasView.ts'
 import { extractInk, thresholdInk } from './core/ink.ts'
 import { smoothMask, skeletonize } from './core/morphology.ts'
@@ -614,6 +614,11 @@ function runFlat(matchOld: boolean) {
         regs[ri.id] = { id: ri.id, color: paletteColor(ri.id), name: 'Fill ' + ri.id, visible: !ri.isBg, parent: ri.id, area: ri.area, isBg: ri.isBg }
       }
       doc.regions = regs
+      // Colours come from where each fill IS, so a fill the settings did not
+      // change keeps the colour it had. The overlap match below still runs on
+      // top of this -- it carries names, visibility and hand-picked colours
+      // across -- but the base palette no longer depends on it.
+      applyAutoColors()
       // re-flat carries colours over from the old regions (preserving both the
       // palette and any manual recolouring); a fresh flat assigns the palette
       if (oldLabels && oldRegions && oldLut) matchColors(oldLabels, oldRegions, oldLut)
@@ -1096,13 +1101,20 @@ function regionAdjacency(): Map<number, Set<number>> {
 // would visually merge neighbours and collapse them into one export layer.
 // Largest regions are coloured first (they have the most neighbours to satisfy).
 // K = 0 restores a unique colour per fill.
+// A colour per fill, from the fill's own anchor. Every root gets one, so this
+// is also the only place the "unique colour per fill" palette is produced.
+function applyAutoColors() {
+  if (!doc.labels) return
+  for (const r of doc.roots()) {
+    const at = regionAnchor(r.id)
+    if (at) r.color = anchorColor(at[0], at[1])
+  }
+}
+
 function applyPalette(K: number) {
   if (!doc.labels) return
   const roots = doc.roots()
-  if (!K) {
-    for (const r of roots) r.color = paletteColor(r.id)
-    return
-  }
+  if (!K) { applyAutoColors(); return }
   const adj = regionAdjacency()
   const idx = new Map<number, number>()
   for (const r of roots) {

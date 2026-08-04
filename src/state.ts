@@ -93,6 +93,27 @@ export class Doc {
 
 export interface UndoOp { label: string; heavy?: boolean; undo(): void }
 
+// The automatic colour of a fill, derived from a point inside it rather than
+// from its id. Ids are handed out by the segmenter and are reshuffled by any
+// change to the settings, so an id-derived palette repainted the whole drawing
+// every time a slider moved and made it impossible to see what had actually
+// changed. Keyed on a place, a fill that came out the same comes out the same
+// colour, and only the fills that really moved change.
+//
+// The point is the fill's anchor -- a pixel inside it -- and NOT its centroid,
+// for two reasons. A ring and the hole inside it share a centroid, so they
+// would come out identically coloured and read as one shape. And because
+// anchors are pixels inside disjoint regions, no two fills can ever be handed
+// the same colour by accident.
+export function anchorColor(x: number, y: number): [number, number, number] {
+  return hslToRgb(hash01(x, y, 1) * 360, 0.45 + 0.2 * hash01(x, y, 2), 0.68 + 0.12 * hash01(x, y, 3))
+}
+function hash01(x: number, y: number, s: number): number {
+  let h = (x * 374761393 + y * 668265263 + s * 1442695041) | 0
+  h = Math.imul(h ^ (h >>> 13), 1274126177)
+  return ((h ^ (h >>> 16)) >>> 0) / 4294967296
+}
+
 export function paletteColor(i: number): [number, number, number] {
   const h = (i * 137.508) % 360
   const s = 0.45 + 0.2 * ((i * 7) % 3) / 2
