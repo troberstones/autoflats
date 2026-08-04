@@ -25,6 +25,11 @@ export interface DeleteMark { id: number; x: number; y: number }
 // The two-click merge tool, remembered the same way: the two points that were
 // clicked, not the two region ids they resolved to at the time.
 export interface MergePair { id: number; ax: number; ay: number; bx: number; by: number }
+// A fill the user drew by hand rather than one the segmenter found. Kept as the
+// polygon, so it is re-stamped after every re-flat exactly like the other edits
+// -- and it wins over whatever the segmenter put there, because it was drawn on
+// purpose.
+export interface ShapeFill { id: number; pts: number[]; color: [number, number, number]; name: string }
 
 export interface Stroke { pts: number[]; mode: 'draw' | 'erase' }
 
@@ -48,6 +53,8 @@ export class Doc {
   nextGroup = 1
   mergeStrokes: MergeStroke[] = []
   mergePairs: MergePair[] = []
+  shapeFills: ShapeFill[] = []
+  palette: string[] = []   // user's swatches, hex
   deleteMarks: DeleteMark[] = []
   nextEdit = 1
 

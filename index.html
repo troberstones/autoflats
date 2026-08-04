@@ -59,6 +59,9 @@
   .hint { color: #888; font-size: 11px; }
   label.s.off { opacity: .45; }
   .spin { color: #6cf; }
+  #pal { display: inline-flex; gap: 3px; flex-wrap: wrap; max-width: 40vw; }
+  #pal i { width: 18px; height: 18px; border-radius: 3px; border: 1px solid #0006; cursor: pointer; display: block; }
+  #pal i.cur { outline: 2px solid #fff; outline-offset: 1px; }
   /* pointer-events:none so the overlay can never eat the drag it is advertising */
   #dropzone { position: fixed; inset: 0; z-index: 50; display: none; pointer-events: none;
               align-items: center; justify-content: center; background: rgba(20,30,45,.82);
@@ -82,6 +85,9 @@
     </select>
     <label class="s">Fill color <input type="color" id="curColor" value="#c8e0f0"></label>
     <label class="s" title="Bucket picks a random color per fill"><input type="checkbox" id="cRand"> Random</label>
+    <span id="pal" title="Swatches. Click one to make it the current color; ⌥-click or right-click removes it."></span>
+    <button id="bPalAdd" class="link" title="Add the current fill color to the palette">+</button>
+    <button id="bPalPull" class="link" title="Replace the palette with the colors already used by the fills">⤓ from fills</button>
     <span id="status">Open a line-art image to begin</span>
   </div>
   <div id="tools">
@@ -93,6 +99,7 @@
     <button id="tDraw"    title="Draw merge (D): stroke from a fill — every fill the stroke crosses merges into it">🧲</button>
     <button id="tDel"     title="Delete fill (X): click a fill to remove it — it stops rendering and is left out of the PSD. Survives re-flatting; ⌘Z restores">🗑</button>
     <button id="tGroup"   title="Group fills (R): lasso around or a stroke through a set of fills — they export as a PSD folder and the group survives re-flatting">🔗</button>
+    <button id="tShape"  title="Shape fill (F): draw a closed shape and it becomes a fill in the current color, on top of whatever was there. Remembered as the shape you drew, so it survives re-flatting.">⬠</button>
     <button id="tPick"    title="Select edits (S): click a remembered edit — a draw-merge stroke, a ✖ delete marker or a group lasso — or drag a box around several. Shift-click adds. Delete removes them. Turns on the Edits overlay.">⬚</button>
   </div>
   <div id="wrap"><canvas id="view"></canvas></div>

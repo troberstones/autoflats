@@ -1,4 +1,4 @@
-import { Doc, Region, Stroke, UndoOp, type MergePair, paletteColor, rgbToHex, hexToRgb, hslToRgb } from './state.ts'
+import { Doc, Region, Stroke, UndoOp, type MergePair, type ShapeFill, paletteColor, rgbToHex, hexToRgb, hslToRgb } from './state.ts'
 import { CanvasView, Tool } from './ui/canvasView.ts'
 import { extractInk, thresholdInk } from './core/ink.ts'
 import { smoothMask, skeletonize } from './core/morphology.ts'
@@ -743,7 +743,79 @@ function replayEdits() {
     const r = doc.regions[doc.root(doc.labels[y * doc.W + x])]
     if (r) r.deleted = true
   }
+  // Shapes stamp last: they overwrite the label map, so they must land on the
+  // regions as they finally are rather than on ones a later merge would change.
+  if (doc.shapeFills.length) {
+    const line = currentLineMask()   // one mask for all of them, not one each
+    for (const sf of doc.shapeFills) applyShapeFill(sf, line)
+  }
   assignGroups()
+}
+
+// Stamp a hand-drawn shape into the label map as a region of its own. It is
+// applied AFTER segmentation and overwrites whatever was underneath, because a
+// shape the user drew deliberately outranks anything the segmenter inferred --
+// which is the whole point of having the tool. Areas of the regions it covers
+// are decremented so the panel keeps telling the truth.
+function applyShapeFill(sf: ShapeFill, line = currentLineMask()): boolean {
+  if (!doc.labels) return false
+  const { W, H, labels } = doc
+  const p = sf.pts
+  if (p.length < 6) return false
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity
+  for (let i = 0; i < p.length; i += 2) {
+    if (p[i] < x0) x0 = p[i]; if (p[i] > x1) x1 = p[i]
+    if (p[i + 1] < y0) y0 = p[i + 1]; if (p[i + 1] > y1) y1 = p[i + 1]
+  }
+  x0 = Math.max(0, Math.floor(x0)); y0 = Math.max(0, Math.floor(y0))
+  x1 = Math.min(W - 1, Math.ceil(x1)); y1 = Math.min(H - 1, Math.ceil(y1))
+  const id = doc.regions.length
+  const reg: Region = { id, color: sf.color, name: sf.name, visible: true, parent: id, area: 0, isBg: false }
+  doc.regions.push(reg)
+  const lut = doc.rootLut()
+  for (let y = y0; y <= y1; y++) {
+    for (let x = x0; x <= x1; x++) {
+      if (!pointInPoly(x + 0.5, y + 0.5, p)) continue
+      const i = y * W + x
+      // Label every pixel, ink included, so the shape reads as a fill under the
+      // line art like any other. Area is a count of FREE pixels only, which is
+      // the convention finalizeRegions uses -- counting ink here would make the
+      // panel's figures disagree with every other region's.
+      if (!line[i]) {
+        const prev = doc.regions[lut[labels[i]] ?? 0]
+        if (prev && prev.id !== id) prev.area--
+        reg.area++
+      }
+      labels[i] = id
+    }
+  }
+  // Nothing stamped -- drawn off the image, or entirely on ink. Take the
+  // region back out rather than leaving an empty one in the panel.
+  if (!reg.area) { doc.regions.pop(); return false }
+  return true
+}
+
+function shapeFillFromStroke(pts: number[]) {
+  if (!doc.labels) return
+  const sf: ShapeFill = {
+    id: doc.nextEdit++, pts: pts.slice(), color: pickColor(),
+    name: 'Shape ' + (doc.shapeFills.length + 1),
+  }
+  if (!applyShapeFill(sf)) { status('Shape fill: that shape covers no free pixels'); return }
+  doc.shapeFills.push(sf)
+  pushUndo({
+    label: 'shape fill',
+    undo: () => { doc.shapeFills.splice(doc.shapeFills.indexOf(sf), 1); setDirty(true); replayAndRefresh() },
+  })
+  rebuildFills(); rebuildPanel(); rebuildEditView()
+  status(`Drew "${sf.name}" — it is a fill like any other, and survives re-flatting`)
+}
+
+// Shapes are stamped into the label map, so undoing one means rebuilding the
+// map. Cheapest correct route is to re-run the replay from the last flat.
+function replayAndRefresh() {
+  replayEdits()
+  rebuildFills(); rebuildPanel(); rebuildEditView()
 }
 
 // Re-run one two-click merge against whatever regions now sit under its two
@@ -956,7 +1028,7 @@ function setTool(t: Tool) {
   view.tool = t
   mergeFirst = null
   view.mergeAnchor = null
-  for (const [id, tt] of [['tPan', 'pan'], ['tFill', 'fill'], ['tBarrier', 'barrier'], ['tEraser', 'eraser'], ['tMerge', 'merge'], ['tDraw', 'dmerge'], ['tDel', 'delfill'], ['tGroup', 'group'], ['tPick', 'pick']] as const)
+  for (const [id, tt] of [['tPan', 'pan'], ['tFill', 'fill'], ['tBarrier', 'barrier'], ['tEraser', 'eraser'], ['tMerge', 'merge'], ['tDraw', 'dmerge'], ['tDel', 'delfill'], ['tGroup', 'group'], ['tShape', 'shape'], ['tPick', 'pick']] as const)
     $(id).classList.toggle('active', tt === t)
   // picking edits you cannot see would be a guessing game
   if (t === 'pick' && !($<HTMLInputElement>('cEdits')).checked) ($<HTMLInputElement>('cEdits')).checked = true
@@ -1052,6 +1124,7 @@ view.onCancel = () => {
 view.onStroke = pts => {
   if (!doc.src) return
   if (view.tool === 'group') { groupFromStroke(pts); return }
+  if (view.tool === 'shape') { shapeFillFromStroke(pts); return }
   if (view.tool === 'dmerge') { mergeAlongStroke(pts); return }
   if (view.tool !== 'barrier' && view.tool !== 'eraser') return
   const s: Stroke = { pts, mode: view.tool === 'eraser' ? 'erase' : 'draw' }
@@ -1379,6 +1452,7 @@ async function loadFile(f: File) {
   doc.nextGroup = 1
   doc.mergeStrokes = []
   doc.mergePairs = []
+  doc.shapeFills = []
   doc.deleteMarks = []
   doc.nextEdit = 1
   selectedEdits.clear()
@@ -1448,6 +1522,74 @@ $('bAcceptAll').onclick = () => {
   runFlat(true)
 }
 $('bExport').onclick = doExport
+// ---------- palette ----------
+// A colourist works from a set of colours, not from a picker: the point is that
+// the same skin tone lands on every skin fill. Swatches persist across sessions,
+// because a palette outlives the drawing it was built for.
+const PAL_KEY = 'autoflats.palette'
+function loadPalette() {
+  try {
+    const raw = localStorage.getItem(PAL_KEY)
+    if (raw) doc.palette = JSON.parse(raw).filter((h: unknown) => typeof h === 'string' && /^#[0-9a-f]{6}$/i.test(h))
+  } catch { /* absent or corrupt: an empty palette is a fine fallback */ }
+}
+function savePalette() {
+  try { localStorage.setItem(PAL_KEY, JSON.stringify(doc.palette)) } catch { /* private mode */ }
+}
+function rebuildPalette() {
+  const bar = $('pal')
+  bar.innerHTML = ''
+  const cur = ($('curColor') as HTMLInputElement).value.toLowerCase()
+  for (const hex of doc.palette) {
+    const sw = document.createElement('i')
+    sw.style.background = hex
+    sw.title = hex
+    if (hex.toLowerCase() === cur) sw.className = 'cur'
+    sw.onclick = e => {
+      if (e.altKey) { removeSwatch(hex); return }
+      ;($('curColor') as HTMLInputElement).value = hex
+      applyColorToSelection(hexToRgb(hex))
+      rebuildPalette()
+    }
+    sw.oncontextmenu = e => { e.preventDefault(); removeSwatch(hex) }
+    bar.append(sw)
+  }
+}
+const removeSwatch = (hex: string) => {
+  doc.palette = doc.palette.filter(h => h !== hex)
+  savePalette(); rebuildPalette()
+}
+// Clicking a swatch recolours the selected fill straight away -- otherwise you
+// would pick a colour and then still have to go and apply it.
+function applyColorToSelection(c: [number, number, number]) {
+  const r = doc.regions[doc.root(selected)]
+  if (!r || r.deleted) return
+  const prev = r.color
+  r.color = c
+  pushUndo({ label: 'recolor', undo: () => { r.color = prev; rebuildFills(); rebuildPanel() } })
+  rebuildFills(); rebuildPanel()
+}
+$('bPalAdd').onclick = () => {
+  const hex = ($('curColor') as HTMLInputElement).value.toLowerCase()
+  if (!doc.palette.includes(hex)) doc.palette.push(hex)
+  savePalette(); rebuildPalette()
+}
+$('bPalPull').onclick = () => {
+  // Order by area so the palette reads big-shapes-first rather than by id.
+  const seen = new Set<string>()
+  doc.palette = doc.roots().filter(r => !r.deleted && !r.isBg)
+    .map(r => rgbToHex(r.color).toLowerCase())
+    .filter(h => !seen.has(h) && seen.add(h))
+    .slice(0, 40)
+  savePalette(); rebuildPalette()
+  status(`Palette: ${doc.palette.length} colors from the current fills`)
+}
+$('curColor').oninput = () => { rebuildPalette(); view.shapePreview = shapeTint() }
+const shapeTint = () => {
+  const [r, g, b] = hexToRgb(($('curColor') as HTMLInputElement).value)
+  return `rgba(${r},${g},${b},0.45)`
+}
+
 // Advanced: the tuning controls most drawings never need. Remembered across
 // sessions, because someone who opens it once usually wants it open.
 const ADV_KEY = 'autoflats.adv'
@@ -1462,6 +1604,9 @@ try { if (localStorage.getItem(ADV_KEY)) setAdvanced(true) } catch { /* private 
 
 $('bUndo').onclick = doUndo
 $('tPan').onclick = () => setTool('pan')
+loadPalette()
+rebuildPalette()
+view.shapePreview = shapeTint()
 $('tFill').onclick = () => setTool('fill')
 $('tBarrier').onclick = () => setTool('barrier')
 $('tEraser').onclick = () => setTool('eraser')
@@ -1469,6 +1614,7 @@ $('tMerge').onclick = () => setTool('merge')
 $('tDraw').onclick = () => setTool('dmerge')
 $('tDel').onclick = () => setTool('delfill')
 $('tGroup').onclick = () => setTool('group')
+$('tShape').onclick = () => setTool('shape')
 $('tPick').onclick = () => setTool('pick')
 $('cEdits').onchange = () => { if (!($<HTMLInputElement>('cEdits')).checked) selectedEdits.clear(); rebuildEditView() }
 
@@ -1515,6 +1661,7 @@ addEventListener('keydown', e => {
   else if (k === 'm') setTool('merge')
   else if (k === 'x') setTool('delfill')
   else if (k === 'r') setTool('group')
+  else if (k === 'f') setTool('shape')
   else if (k === 'd') setTool('dmerge')
   else if (k === 's') setTool('pick')
 })

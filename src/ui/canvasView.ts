@@ -1,9 +1,9 @@
-export type Tool = 'pan' | 'fill' | 'barrier' | 'eraser' | 'merge' | 'dmerge' | 'delfill' | 'group' | 'pick'
+export type Tool = 'pan' | 'fill' | 'barrier' | 'eraser' | 'merge' | 'dmerge' | 'delfill' | 'group' | 'shape' | 'pick'
 // Press-to-release travel, in client px, below which a drag still counts as a
 // click rather than a stroke or a box-select.
 const MOVE_SLOP = 6
-const STROKE_TOOLS: Tool[] = ['barrier', 'eraser', 'dmerge', 'group']
-const STROKE_COLORS: Record<string, string> = { barrier: '#39f', eraser: '#f66', dmerge: '#4f4', group: '#fc0' }
+const STROKE_TOOLS: Tool[] = ['barrier', 'eraser', 'dmerge', 'group', 'shape']
+const STROKE_COLORS: Record<string, string> = { barrier: '#39f', eraser: '#f66', dmerge: '#4f4', group: '#fc0', shape: '#fff' }
 
 // A remembered edit, drawn back on the canvas so it can be picked and removed.
 // Colours match the tool that made it, so the overlay reads as "here is the
@@ -46,6 +46,7 @@ export class CanvasView {
   // a rubber band so a half-finished merge is visible rather than being invisible
   // state you find out about by clicking somewhere unrelated.
   mergeAnchor: [number, number] | null = null
+  shapePreview = 'rgba(255,255,255,0.35)'  // the colour a shape fill would land in
   private mergeCursor: [number, number] | null = null
 
   private space = false
@@ -361,11 +362,11 @@ export class CanvasView {
       ctx.beginPath()
       ctx.moveTo(this.stroke[0], this.stroke[1])
       for (let i = 2; i < this.stroke.length; i += 2) ctx.lineTo(this.stroke[i], this.stroke[i + 1])
-      if (this.tool === 'group') {
-        // the lasso closes on release: show the closing edge and the area it
-        // will capture while the user is still drawing
+      if (this.tool === 'group' || this.tool === 'shape') {
+        // both close on release: show the closing edge and the area they will
+        // capture while the user is still drawing
         ctx.closePath()
-        ctx.fillStyle = 'rgba(255,204,0,0.18)'
+        ctx.fillStyle = this.tool === 'shape' ? this.shapePreview : 'rgba(255,204,0,0.18)'
         ctx.fill()
       }
       ctx.stroke()
