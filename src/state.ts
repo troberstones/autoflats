@@ -8,6 +8,7 @@ export interface Region {
   isBg: boolean
   deleted?: boolean // removed by the user: not rendered, not exported
   group?: number    // Group.id, or 0/undefined when ungrouped
+  swatch?: number   // palette slot this colour came from; undefined when it did not
 }
 
 // A user-drawn grouping. Stored as the drawn PATH, not a list of region ids:
@@ -30,6 +31,13 @@ export interface MergePair { id: number; ax: number; ay: number; bx: number; by:
 // -- and it wins over whatever the segmenter put there, because it was drawn on
 // purpose.
 export interface ShapeFill { id: number; pts: number[]; color: [number, number, number]; name: string }
+// A colour the user chose for a fill, remembered the same way: as a point in
+// the drawing rather than as a region id, so a re-flat can find the area again
+// and put the colour back. `slot` is the palette swatch it came from, and the
+// link is live in both directions -- adjust that swatch and every fill painted
+// from it follows. Null when the colour came from the well rather than the
+// palette, or when the swatch it came from has since been emptied.
+export interface Recolor { id: number; x: number; y: number; slot: number | null; color: [number, number, number] }
 
 export interface Stroke { pts: number[]; mode: 'draw' | 'erase' }
 
@@ -54,6 +62,7 @@ export class Doc {
   mergeStrokes: MergeStroke[] = []
   mergePairs: MergePair[] = []
   shapeFills: ShapeFill[] = []
+  recolors: Recolor[] = []
   // Fixed-length grid with holes: a null is an empty slot, not a missing one.
   // Position is meaning in a palette -- skin in the top row, cloth in the next
   // -- so clearing a swatch must leave a gap rather than shuffle everything up.

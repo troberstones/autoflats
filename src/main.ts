@@ -1,4 +1,4 @@
-import { Doc, Region, Stroke, UndoOp, type MergePair, type ShapeFill, paletteColor, rgbToHex, hexToRgb, hslToRgb, rgbToHsl } from './state.ts'
+import { Doc, Region, Stroke, UndoOp, type MergePair, type ShapeFill, type Recolor, paletteColor, rgbToHex, hexToRgb, hslToRgb, rgbToHsl } from './state.ts'
 import { CanvasView, Tool } from './ui/canvasView.ts'
 import { extractInk, thresholdInk } from './core/ink.ts'
 import { smoothMask, skeletonize } from './core/morphology.ts'
@@ -785,7 +785,84 @@ function replayEdits() {
     const line = currentLineMask()   // one mask for all of them, not one each
     for (const sf of doc.shapeFills) applyShapeFill(sf, line)
   }
+  // Colours last of all, so they land on the regions as they finally are --
+  // including the ones a shape fill just stamped over the top.
+  for (const rc of doc.recolors) {
+    const x = rc.x | 0, y = rc.y | 0
+    if (x < 0 || y < 0 || x >= doc.W || y >= doc.H) continue
+    const r = doc.regions[doc.root(doc.labels[y * doc.W + x])]
+    if (!r) continue
+    r.color = rc.color
+    if (rc.slot === null) delete r.swatch; else r.swatch = rc.slot
+  }
   assignGroups()
+}
+
+// ---------- remembered colours ----------
+// A recolour has to be replayable after a re-flat, which means it has to be
+// stored as a place rather than as a region id. The place is the region's
+// centroid, snapped to a pixel that is actually inside it: a crescent's
+// centroid lands in the notch, and a point outside the shape would come back
+// after re-flatting as whatever is now in the notch instead.
+let anchorCache = new Map<number, [number, number]>()
+let anchorKey = ''
+function regionAnchor(id: number): [number, number] | null {
+  if (!doc.labels) return null
+  const { W, labels } = doc
+  const lut = doc.rootLut()
+  // Merging or re-flatting moves every boundary, so the cache is keyed on the
+  // shape of the region tree rather than cleared by hand at each call site.
+  const key = lut.join(',')
+  if (key !== anchorKey) { anchorCache = new Map(); anchorKey = key }
+  // Every root at once, in two passes over the image rather than two per
+  // region: shift-clicking a shared colour recolours dozens of fills in one
+  // go, and doing this per region would have made that a multi-second stall.
+  if (!anchorCache.size) {
+    const n = new Map<number, number>(), sx = new Map<number, number>(), sy = new Map<number, number>()
+    for (let i = 0; i < labels.length; i++) {
+      const r = lut[labels[i]]
+      if (!r) continue
+      n.set(r, (n.get(r) ?? 0) + 1)
+      sx.set(r, (sx.get(r) ?? 0) + (i % W))
+      sy.set(r, (sy.get(r) ?? 0) + ((i / W) | 0))
+    }
+    const cx = new Map<number, number>(), cy = new Map<number, number>(), bd = new Map<number, number>()
+    for (const [r, c] of n) { cx.set(r, sx.get(r)! / c); cy.set(r, sy.get(r)! / c); bd.set(r, Infinity) }
+    for (let i = 0; i < labels.length; i++) {
+      const r = lut[labels[i]]
+      if (!r) continue
+      const x = i % W, y = (i / W) | 0
+      const dx = x - cx.get(r)!, dy = y - cy.get(r)!, d = dx * dx + dy * dy
+      if (d < bd.get(r)!) { bd.set(r, d); anchorCache.set(r, [x, y]) }
+    }
+  }
+  return anchorCache.get(id) ?? null
+}
+
+// One record per region, found by asking which record's point still lands in
+// it -- so recolouring the same area twice replaces the note rather than
+// stacking a pile of them that all have to be replayed.
+function recolorRecordFor(id: number): Recolor | undefined {
+  if (!doc.labels) return undefined
+  return doc.recolors.find(rc => {
+    const x = rc.x | 0, y = rc.y | 0
+    if (x < 0 || y < 0 || x >= doc.W || y >= doc.H) return false
+    return doc.root(doc.labels![y * doc.W + x]) === id
+  })
+}
+
+// The single place a fill's colour is set by hand. Everything a user can do to
+// colour a region goes through here, so the link to the swatch and the note
+// that survives re-flatting can never be forgotten by one path and remembered
+// by another.
+function paintRegion(r: Region, rgb: [number, number, number], slot: number | null = curSwatch) {
+  r.color = rgb
+  if (slot === null) delete r.swatch; else r.swatch = slot
+  const at = regionAnchor(r.id)
+  if (!at) return
+  const rec = recolorRecordFor(r.id)
+  if (rec) { rec.color = rgb; rec.slot = slot; rec.x = at[0]; rec.y = at[1] }
+  else doc.recolors.push({ id: doc.nextEdit++, x: at[0], y: at[1], slot, color: rgb })
 }
 
 // Stamp a hand-drawn shape into the label map as a region of its own. It is
@@ -1090,7 +1167,9 @@ view.onClick = (fx, fy, e) => {
   // flatting and wrong once you are painting: at that point a stray click on
   // the paper should change a colour, not the segmentation.
   if (view.tool === 'recolor') {
-    if (e.altKey) { setCurHex(rgbToHex(r.color)); rebuildPalette(); rebuildPalGrid(); return }
+    // Picking up a fill's colour picks up its swatch link too, so the next
+    // thing you paint joins the same group rather than quietly leaving it.
+    if (e.altKey) { curSwatch = r.swatch ?? null; setCurHex(rgbToHex(r.color)); repaintPalette(); return }
     const c = hexToRgb(curHex())
     // Shift takes every fill wearing the same colour -- the whole point of
     // flatting from a palette is that a tone is shared, so changing one's mind
@@ -1098,10 +1177,11 @@ view.onClick = (fx, fy, e) => {
     const same = e.shiftKey ? rgbToHex(r.color).toLowerCase() : null
     const hit = doc.roots().filter(t => !t.deleted && (same ? rgbToHex(t.color).toLowerCase() === same : t.id === id))
     if (!hit.length) return
-    const prev = hit.map(t => t.color)
-    for (const t of hit) { t.color = c; t.visible = true }
+    const prev = hit.map(t => ({ color: t.color, swatch: t.swatch }))
+    for (const t of hit) { paintRegion(t, c); t.visible = true }
     pushUndo({ label: same ? `recolor ${hit.length} fills` : 'recolor',
-               undo: () => { hit.forEach((t, i) => { t.color = prev[i] }); rebuildFills(); rebuildPanel() } })
+               undo: () => { hit.forEach((t, i) => paintRegion(t, prev[i].color, prev[i].swatch ?? null))
+                             rebuildFills(); rebuildPanel() } })
     selected = id
     rebuildFills(); rebuildPanel()
     if (same) status(`Recolored ${hit.length} fills`)
@@ -1110,10 +1190,13 @@ view.onClick = (fx, fy, e) => {
   if (view.tool === 'fill') {
     if (e.altKey) { ($('curColor') as HTMLInputElement).value = rgbToHex(r.color); return }
     if (r.isBg) { carveAt(y * doc.W + x); return }
-    const prev = r.color
-    r.color = pickColor()
+    const prev = r.color, prevSlot = r.swatch ?? null
+    // A random colour is nobody's swatch, so the bucket only claims the link
+    // when it is actually painting the current colour.
+    const rand = ($<HTMLInputElement>('cRand')).checked
+    paintRegion(r, pickColor(), rand ? null : curSwatch)
     r.visible = true
-    pushUndo({ label: 'recolor', undo: () => { r.color = prev; rebuildFills(); rebuildPanel() } })
+    pushUndo({ label: 'recolor', undo: () => { paintRegion(r, prev, prevSlot); rebuildFills(); rebuildPanel() } })
     selected = id
     rebuildFills(); rebuildPanel()
   } else if (view.tool === 'merge') {
@@ -1511,8 +1594,11 @@ async function loadFile(f: File) {
   doc.mergeStrokes = []
   doc.mergePairs = []
   doc.shapeFills = []
+  doc.recolors = []
   doc.deleteMarks = []
   doc.nextEdit = 1
+  anchorCache = new Map(); anchorKey = ''
+  curSwatch = null
   selectedEdits.clear()
   view.edits = []
   doc.barrierMask = new Uint8Array(doc.W * doc.H)
@@ -1617,6 +1703,11 @@ const writeCur = (hex: string) => { ($('curColor') as HTMLInputElement).value = 
 const setCurHex = (hex: string) => { writeCur(hex); syncSliders(hex) }
 // Which slot the sliders are editing. Null once its colour is gone.
 let palSel: number | null = null
+// Which slot the CURRENT colour came from, if any. This is what makes a fill
+// painted from the palette stay attached to it: the link is recorded at the
+// moment of painting, so a colour typed into the well never claims to be a
+// swatch and a swatch never loses track of what it painted.
+let curSwatch: number | null = null
 
 // Pad or trim to the grid. Older versions stored a dense array of colours with
 // no holes, and that reads correctly here as "the first N slots are filled".
@@ -1639,22 +1730,22 @@ function repaintPalette() { savePalette(); rebuildPalette(); rebuildPalGrid() }
 function rebuildPalette() {
   const bar = $('pal')
   bar.innerHTML = ''
-  const cur = curHex()
-  for (const hex of doc.palette) {
-    if (!hex) continue
+  doc.palette.forEach((hex, i) => {
+    if (!hex) return
     const sw = document.createElement('i')
     sw.style.background = hex
     sw.title = hex
-    if (hex === cur) sw.className = 'cur'
+    if (palSel === i) sw.className = 'cur'
     sw.onclick = e => {
       if (e.altKey) { removeSwatch(hex); return }
+      palSel = i; curSwatch = i
       setCurHex(hex)
       applyColorToSelection(hexToRgb(hex))
       repaintPalette()
     }
     sw.oncontextmenu = e => { e.preventDefault(); removeSwatch(hex) }
     bar.append(sw)
-  }
+  })
 }
 
 // Press-and-hold, because a tablet has no ⌥ and no right button, and a palette
@@ -1691,11 +1782,21 @@ function rebuildPalGrid() {
       // Selection is by SLOT, not by colour: two slots can hold the same
       // colour, and the sliders have to know which one they are editing.
       if (palSel === i) sw.className = 'cur'
-      const clear = () => { doc.palette[i] = null; if (palSel === i) palSel = null; repaintPalette() }
+      // Emptying a slot must not leave fills pointing at a colour that is no
+      // longer in the palette: they keep the colour they are wearing and
+      // simply stop following anything.
+      const clear = () => {
+        doc.palette[i] = null
+        if (palSel === i) palSel = null
+        if (curSwatch === i) curSwatch = null
+        for (const t of doc.regions) if (t && t.swatch === i) delete t.swatch
+        for (const rc of doc.recolors) if (rc.slot === i) rc.slot = null
+        repaintPalette()
+      }
       sw.onclick = e => {
         if (lpFired) return // the hold already emptied it
         if (e.altKey) { clear(); return }
-        palSel = i
+        palSel = i; curSwatch = i
         setCurHex(hex)
         applyColorToSelection(hexToRgb(hex))
         repaintPalette()
@@ -1710,7 +1811,7 @@ function rebuildPalGrid() {
       // keeping one, and it should cost a single tap.
       sw.onclick = () => {
         if (lpFired) return // this click is the tail of a hold that just emptied this slot
-        doc.palette[i] = curHex(); palSel = i; repaintPalette()
+        doc.palette[i] = curHex(); palSel = i; curSwatch = i; repaintPalette()
       }
     }
     g.append(sw)
@@ -1739,15 +1840,20 @@ function labelSliders() {
 }
 // A drag is one undo step, not one per pixel of travel: the region's colour is
 // updated live on every input, and the undo entry is pushed once, on release.
-let sliderUndo: { r: Region; color: [number, number, number] } | null = null
+let sliderUndo: { r: Region; color: [number, number, number] }[] | null = null
 function slidersChanged(rgb: [number, number, number]) {
   const hex = rgbToHex(rgb)
   writeCur(hex)
-  if (palSel !== null && doc.palette[palSel]) { doc.palette[palSel] = hex; savePalette(); rebuildPalette(); rebuildPalGrid() }
-  const r = doc.regions[doc.root(selected)]
-  if (r && !r.deleted) {
-    if (!sliderUndo) sliderUndo = { r, color: r.color }
-    r.color = rgb
+  if (palSel === null || !doc.palette[palSel]) { labelSliders(); return }
+  doc.palette[palSel] = hex
+  savePalette(); rebuildPalette(); rebuildPalGrid()
+  // Every fill painted from this swatch follows it. That is the point of the
+  // link: a colourist changes their mind about a tone, not about the forty
+  // places it was used.
+  const linked = doc.roots().filter(r => !r.deleted && r.swatch === palSel)
+  if (linked.length) {
+    if (!sliderUndo) sliderUndo = linked.map(r => ({ r, color: r.color }))
+    for (const r of linked) paintRegion(r, rgb, palSel)
     rebuildFills(); rebuildPanel()
   }
   labelSliders()
@@ -1766,7 +1872,8 @@ for (const id of ['sPH', 'sPS', 'sPL']) SL(id).oninput = () => {
 for (const id of ['sPR', 'sPG', 'sPB', 'sPH', 'sPS', 'sPL']) SL(id).onchange = () => {
   const u = sliderUndo
   sliderUndo = null
-  if (u) pushUndo({ label: 'recolor', undo: () => { u.r.color = u.color; rebuildFills(); rebuildPanel() } })
+  if (u?.length) pushUndo({ label: u.length > 1 ? `recolor ${u.length} fills` : 'recolor',
+    undo: () => { for (const e of u) paintRegion(e.r, e.color, e.r.swatch ?? null); rebuildFills(); rebuildPanel() } })
 }
 const removeSwatch = (hex: string) => {
   doc.palette = doc.palette.map(h => (h === hex ? null : h))
@@ -1787,9 +1894,9 @@ function addSwatch(hex: string) {
 function applyColorToSelection(c: [number, number, number]) {
   const r = doc.regions[doc.root(selected)]
   if (!r || r.deleted) return
-  const prev = r.color
-  r.color = c
-  pushUndo({ label: 'recolor', undo: () => { r.color = prev; rebuildFills(); rebuildPanel() } })
+  const prev = r.color, prevSlot = r.swatch ?? null
+  paintRegion(r, c)
+  pushUndo({ label: 'recolor', undo: () => { paintRegion(r, prev, prevSlot); rebuildFills(); rebuildPanel() } })
   rebuildFills(); rebuildPanel()
 }
 $('bPalAdd').onclick = () => addSwatch(curHex())
@@ -1869,6 +1976,7 @@ function pickFromReference(e: PointerEvent) {
   const y = Math.round((e.clientY - r.top) * refCv.height / r.height)
   if (x < 0 || y < 0 || x >= refCv.width || y >= refCv.height) return
   const o = (y * refCv.width + x) * 4, d = refData.data
+  curSwatch = null
   setCurHex(rgbToHex([d[o], d[o + 1], d[o + 2]]))
   rebuildPalette(); rebuildPalGrid()
 }
@@ -1902,7 +2010,7 @@ addEventListener('paste', e => {
 // The well chooses a colour; it does not touch a swatch or a fill. That is the
 // division: the well is what you are about to paint with, the sliders adjust
 // the swatch you have selected.
-$('curColor').oninput = () => { syncSliders(curHex()); rebuildPalette(); rebuildPalGrid(); view.shapePreview = shapeTint() }
+$('curColor').oninput = () => { curSwatch = null; syncSliders(curHex()); rebuildPalette(); rebuildPalGrid(); view.shapePreview = shapeTint() }
 const shapeTint = () => {
   const [r, g, b] = hexToRgb(($('curColor') as HTMLInputElement).value)
   return `rgba(${r},${g},${b},0.45)`
