@@ -32,20 +32,24 @@
   button:hover { background: #505050; }
   button:disabled { opacity: .4; cursor: default; }
   button.active { background: #2a6cd4; border-color: #2a6cd4; color: #fff; }
-  /* The 1994 toolbox: a grey face with a light bevel top-left and a dark one
-     bottom-right, going the other way when pressed. Square corners on purpose
-     -- a rounded button is the wrong decade, and the icons are drawn on a
-     16x16 grid that only lines up on a flat face. */
+  /* The 1994 toolbox, run in reverse: a black face with white ink, a light
+     bevel top-left and a dark one bottom-right. Square corners on purpose --
+     a rounded button is the wrong decade, and the icons are drawn on a pixel
+     grid that only lines up on a flat face.
+
+     The selected tool inverts completely, white face and black ink, the way a
+     chosen tool was shown before anyone had a highlight colour to spend on it.
+     Nothing else in the strip changes, so the eye finds it in one pass. */
   #tools button { padding: 3px; font-size: 0; line-height: 0; border-radius: 0;
-                  background: #c0c0c0; border: 1px solid #000;
-                  box-shadow: inset 1px 1px 0 #fff, inset -1px -1px 0 #808080;
+                  background: #000; border: 1px solid #000;
+                  box-shadow: inset 1px 1px 0 #666, inset -1px -1px 0 #000;
                   display: flex; align-items: center; justify-content: center; }
-  #tools button:hover { background: #d0d0d0; }
-  #tools button.active { background: #a0a0a0;
-                         box-shadow: inset 1px 1px 0 #707070, inset -1px -1px 0 #e0e0e0; }
-  /* The icons paint in currentColor, so the button owns the ink -- black on the
-     grey face, and still black when it is pressed. */
-  #tools button svg { display: block; width: 100%; height: auto; max-width: 22px; color: #000; }
+  #tools button:hover { background: #232323; }
+  #tools button.active { background: #fff;
+                         box-shadow: inset 1px 1px 0 #888, inset -1px -1px 0 #fff; }
+  /* The icons paint in currentColor, so the button owns the ink. */
+  #tools button svg { display: block; width: 100%; height: auto; max-width: 22px; color: #fff; }
+  #tools button.active svg { color: #000; }
   label.s { display: flex; gap: 6px; align-items: center; white-space: nowrap; }
   input[type=range] { width: clamp(52px, 6.5vw, 90px); }
   /* Touch targets: a finger needs more than a 4px-tall slider thumb. */
